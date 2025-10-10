@@ -7,21 +7,14 @@ import dotenv from 'dotenv';
 import methodOverride from 'method-override';
 import expressLayouts from 'express-ejs-layouts';
 import dayjs from 'dayjs';
-
-// ===== DB (MEMORY por defecto) =====
-import { pool } from './db.js';
-
-
-// ===== IA (tus servicios con GPT-5) =====
-import { aiClassify, aiSuggestNext, aiSummarize, aiPreventivePlan } from './services/ai.js';
+import { pool } from './db.js'; // <- MySQL (asegúrate que exista src/db.js)
 
 dotenv.config();
-
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
+const __dirname = path.dirname(__filename);
 
-// ===== Vistas / middlewares =====
+// ---------- App base ----------
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(expressLayouts);
@@ -38,336 +31,245 @@ app.use(session({
   saveUninitialized: false
 }));
 
-// Helpers a las vistas
+// Simular auth para pruebas (si quieres login real, quita esto)
 app.use((req, res, next) => {
-  // Usuario “fake” para desarrollo. Si activas login real, cámbialo.
-  res.locals.user  = req.session.user || { id: 1, username: 'admin', rol: 'ADMIN' };
+  if (!req.session.user) {
+    req.session.user = { id: 1, username: 'admin', rol: 'ADMIN' };
+  }
+  res.locals.user = req.session.user;
   res.locals.dayjs = dayjs;
   next();
 });
 
-function requireAuth(req, res, next) { return next(); }
-
-// ===== Utilidades de fecha =====
-function avoidSunday(s) {
-  const d = dayjs(s).startOf('day');
-  return d.day() === 0 ? d.add(1, 'day').format('YYYY-MM-DD') : d.format('YYYY-MM-DD');
+// Helpers de calendario
+function esDomingo(iso) {
+  // 0=domingo
+  return dayjs(iso).day() === 0;
 }
-function atLeastTomorrow(s) {
-  const d = dayjs(s).startOf('day');
-  const t = dayjs().startOf('day');
-  return d.isAfter(t) ? d.format('YYYY-MM-DD') : t.add(1, 'day').format('YYYY-MM-DD');
+function siguienteNoDomingo(iso) {
+  let d = dayjs(iso);
+  while (d.day() === 0) d = d.add(1, 'day');
+  return d.format('YYYY-MM-DD');
 }
-
-// ---- Catálogo base de trabajos preventivos (se suma a lo que diga la IA)
-const TASK_CATALOG = [
-  // Motor
-  'Cambio de aceite', 'Cambio de filtro de aceite', 'Cambio de filtro de aire',
-  'Cambio de filtro de combustible', 'Revisión de correas', 'Limpieza de inyectores',
-  // Fluidos
-  'Revisión de niveles (aceite, refrigerante, frenos, dirección)', 'Purgado de frenos',
-  'Cambio de refrigerante', 'Cambio de líquido de frenos',
-  // Frenos y suspensión
-  'Revisión de balatas/zapatas', 'Ajuste de frenos', 'Revisión de discos/campanas',
-  'Revisión de amortiguadores', 'Revisión de bujes y rótulas',
-  // Transmisión / Tracción
-  'Cambio de aceite de transmisión', 'Revisión de embrague', 'Revisión de semiejes',
-  'Engrase de crucetas',
-  // Sistema eléctrico
-  'Revisión de batería', 'Revisión de alternador', 'Inspección de cableado',
-  'Revisión de luces (alta/baja/stop/posición)',
-  // Llantas
-  'Rotación de llantas', 'Alineación y balanceo', 'Revisión de presión',
-  // Seguridad
-  'Revisión de extintor', 'Revisión de botiquín', 'Revisión de triángulos',
-  'Calibración de tacógrafo (si aplica)',
-  // Carrocería / Cabina
-  'Lubricación de bisagras', 'Revisión de cierres', 'Inspección de fugas',
-  // Semirremolque (S)
-  'Revisión de kingpin', 'Revisión de patines', 'Revisión de rampas y seguros'
-];
-
-// ===== Espaciado mínimo de 7 días ENTRE PLACAS (consulta BD: robusto a concurrencia) =====
-async function getScheduledDatesFromDB() {
-  const [rows] = await pool.query(`
-    SELECT fecha_inicio
-      FROM mantenimientos
-     WHERE fecha_fin IS NULL
-       AND fecha_inicio IS NOT NULL
-  `);
-  const today = dayjs().startOf('day');
-  return (rows || [])
-    .map(r => dayjs(r.fecha_inicio).startOf('day'))
-    .filter(d => d.isSame(today, 'day') || d.isAfter(today));
-}
-async function violatesSpacingDB(candidateDayjs, spacingDays = 7) {
-  const scheduled = await getScheduledDatesFromDB();
-  for (const d of scheduled) {
-    const diff = Math.abs(candidateDayjs.diff(d, 'day'));
-    if (diff < spacingDays) return true;
-  }
-  return false;
-}
-async function findNextSpacedDateDB(candidate, spacingDays = 7) {
-  let d = dayjs(candidate).startOf('day');
-  const today = dayjs().startOf('day');
+async function fechaSinChoque(fechaBase, excluirPlaca = null) {
+  // Evita programar dos placas el mismo día: si existe alguna ya abierta con esa fecha, empuja 1 día
+  let d = dayjs(fechaBase);
   while (true) {
-    if (!d.isAfter(today)) d = today.add(1, 'day'); // nunca hoy
-    if (d.day() === 0) d = d.add(1, 'day');         // sin domingo
-    const choca = await violatesSpacingDB(d, spacingDays);
-    if (!choca) return d.format('YYYY-MM-DD');
-    d = d.add(1, 'day'); // prueba el siguiente día
+    const fecha = d.format('YYYY-MM-DD');
+    const [rows] = await pool.query(
+      `SELECT u.placa
+         FROM mantenimientos m
+         JOIN unidades u ON u.id=m.unidad_id
+        WHERE m.fecha_fin IS NULL
+          AND m.fecha_inicio = ?`,
+      [fecha]
+    );
+    const hayChoque = Array.isArray(rows) && rows.some(r => r.placa !== excluirPlaca);
+    if (!hayChoque) return fecha;
+    d = d.add(1, 'day');
+    if (d.day() === 0) d = d.add(1, 'day'); // no domingo
   }
 }
 
-// ================================================================
-//                         RUTAS
-// ================================================================
-
-// Dashboard (KPIs + últimos 10)
-app.get('/', requireAuth, async (req, res) => {
+// ---------- Rutas ----------
+app.get('/', async (req, res) => {
   const [[kpis]] = await pool.query(`
     SELECT
-      (SELECT COUNT(*) FROM unidades) as unidades,
-      (SELECT COUNT(*) FROM mantenimientos WHERE fecha_fin IS NULL) as en_taller,
-      (SELECT COUNT(*) FROM mantenimientos WHERE DATE(fecha_inicio)=CURDATE()) as hoy
+      (SELECT COUNT(*) FROM unidades) AS unidades,
+      (SELECT COUNT(*) FROM mantenimientos WHERE fecha_fin IS NULL) AS en_taller,
+      (SELECT COUNT(*) FROM mantenimientos WHERE DATE(fecha_inicio)=CURDATE()) AS hoy
   `);
+
   const [mants] = await pool.query(`
-    SELECT m.id, u.placa, c.nombre as cedis, m.tipo, m.fecha_inicio, m.fecha_fin, m.duracion_dias
-    FROM mantenimientos m
-    JOIN unidades u ON u.id=m.unidad_id
-    LEFT JOIN cedis c ON c.id=m.cedis_id
-    ORDER BY m.id DESC LIMIT 10
+    SELECT m.id, u.placa, c.nombre AS cedis, m.tipo, m.fecha_inicio, m.fecha_fin, m.duracion_dias
+      FROM mantenimientos m
+      JOIN unidades u ON u.id=m.unidad_id
+      LEFT JOIN cedis c ON c.id=m.cedis_id
+     ORDER BY m.id DESC
+     LIMIT 10
   `);
+
   res.render('dashboard', { title: 'Dashboard', kpis, mants });
 });
 
-// Unidades (próximo IA + programar)
-app.get('/unidades', requireAuth, async (req, res) => {
-  const [unidadesRows] = await pool.query(`
+// Unidades
+app.get('/unidades', async (req, res) => {
+  const [unidades] = await pool.query(`
     SELECT u.*, c.nombre AS cedis_nombre
       FROM unidades u
       LEFT JOIN cedis c ON c.id=u.cedis_id
-     ORDER BY u.id DESC
+     ORDER BY u.placa
   `);
-  const [mants] = await pool.query(`
-    SELECT m.*, u.placa, u.id AS unidad_id, c.nombre AS cedis_nombre
-      FROM mantenimientos m
-      JOIN unidades u ON u.id = m.unidad_id
-      LEFT JOIN cedis c ON c.id = m.cedis_id
-  `);
-  const today = dayjs().format('YYYY-MM-DD');
-  const proximos = {};
-  (mants || []).forEach(m => {
-    if (!m.fecha_fin && m.fecha_inicio && m.fecha_inicio >= today) {
-      const cur = proximos[m.unidad_id];
-      if (!cur || m.fecha_inicio < cur) proximos[m.unidad_id] = m.fecha_inicio;
-    }
-  });
-  res.render('unidades', { title: 'Unidades', unidades: unidadesRows, cedis: [], proximos });
+  res.render('unidades', { title: 'Unidades', unidades });
 });
 
-// Mantenimientos — SOLO abiertos/programados
-app.get('/mantenimientos', requireAuth, async (req, res) => {
-  const [allRows] = await pool.query(`
-    SELECT m.*, u.placa, u.id AS unidad_id, c.nombre AS cedis_nombre
-      FROM mantenimientos m
-      JOIN unidades u ON u.id=m.unidad_id
-      LEFT JOIN cedis c ON c.id=m.cedis_id
-      ORDER BY m.id DESC
-  `);
-  const rows = (allRows || [])
-    .filter(m => !m.fecha_fin)
-    .sort((a, b) => {
-      const aKey = (a.fecha_inicio || '9999-12-31') + String(1e9 - a.id).padStart(10, '0');
-      const bKey = (b.fecha_inicio || '9999-12-31') + String(1e9 - b.id).padStart(10, '0');
-      return aKey.localeCompare(bKey);
-    });
-  res.render('mantenimientos_list', { title: 'Mantenimientos', mants: rows });
-});
-
-// Historial — SOLO cerrados
-app.get('/historial', requireAuth, async (req, res) => {
-  const [allRows] = await pool.query(`
-    SELECT m.*, u.placa, u.id AS unidad_id, c.nombre AS cedis_nombre
-      FROM mantenimientos m
-      JOIN unidades u ON u.id=m.unidad_id
-      LEFT JOIN cedis c ON c.id=m.cedis_id
-      ORDER BY m.id DESC
-  `);
-  const rows = (allRows || []).filter(m => !!m.fecha_fin);
-  res.render('historial', { title: 'Historial', mants: rows });
-});
-
-// === Previsualizar plan IA para un mantenimiento (antes de cerrar)
-app.get('/ai/plan/:mantId', requireAuth, async (req, res) => {
-  try {
-    const mantId = Number(req.params.mantId);
-    const [[m]] = await pool.query(`SELECT unidad_id FROM mantenimientos WHERE id=?`, [mantId]);
-    if (!m) return res.status(404).json({ error: 'Mantenimiento no encontrado' });
-
-    const plan = await aiPreventivePlan({ pool, unidadId: m.unidad_id });
-    const candidata = atLeastTomorrow(avoidSunday(plan.fecha_sugerida));
-    const fecha = await findNextSpacedDateDB(candidata, 7);
-
-    // Unir IA + catálogo (únicos)
-    const iaTareas = Array.isArray(plan.tareas) ? plan.tareas : [];
-    const set = new Set([...iaTareas, ...TASK_CATALOG]);
-    const tareasUnificadas = Array.from(set);
-
-    return res.json({
-      ok: true,
-      fecha_sugerida: fecha,
-      motivo_sugerido: plan.motivo_sugerido || 'Plan preventivo sugerido',
-      tareas: tareasUnificadas
-    });
-  } catch (e) {
-    console.error('ai/plan error', e);
-    res.status(500).json({ ok: false, error: 'No se pudo generar el plan.' });
+app.post('/unidades', async (req, res) => {
+  const { placa, tipo, cedis_nombre } = req.body;
+  let cedis_id = null;
+  if (cedis_nombre) {
+    await pool.query(`INSERT IGNORE INTO cedis (nombre) VALUES (?)`, [cedis_nombre]);
+    const [[ced]] = await pool.query(`SELECT id FROM cedis WHERE nombre=? LIMIT 1`, [cedis_nombre]);
+    cedis_id = ced?.id || null;
   }
-});
-
-// Cerrar “Se realizó” (+ trabajos y nota) + reprogramar por IA (7 días entre placas)
-app.post('/mantenimientos/:id/realizado', requireAuth, async (req, res) => {
-  const id  = Number(req.params.id);
-  const hoy = dayjs().format('YYYY-MM-DD');
-  console.log('[CERRAR] Recibido id=', id);
-
-  // 0) Guardar trabajos/nota en el motivo del cerrado (bitácora simple)
-  try {
-    const hechos = Array.isArray(req.body?.hechos) ? req.body.hechos : [];
-    const nota   = (req.body?.nota || '').trim();
-    if (hechos.length || nota) {
-      const texto = [
-        'Cierre:',
-        hechos.length ? ('• Trabajos: ' + hechos.join(', ')) : null,
-        nota ? ('• Nota: ' + nota) : null
-      ].filter(Boolean).join('  |  ');
-      await pool.query(
-        `UPDATE mantenimientos SET motivo = CONCAT(COALESCE(motivo,''), '  ||  ', ?) WHERE id=?`,
-        [texto, id]
-      );
-    }
-  } catch (_) { /* si el driver no soporta CONCAT, ignoramos */ }
-
-  // 1) Cerrar actual
   await pool.query(
-    `UPDATE mantenimientos
-        SET fecha_fin=?, duracion_dias = DATEDIFF(?, fecha_inicio), reservado_inventario=0
-      WHERE id=?`,
-    [hoy, hoy, id]
+    `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
+     VALUES (?,?,?,?,?)`,
+    [placa, tipo || 'CAMION', cedis_id, 0, 'ACTIVA']
   );
-  console.log('[CERRAR] Actualizado fecha_fin=', hoy);
-
-  // 2) Unidad
-  const [[rowU]] = await pool.query(`SELECT unidad_id FROM mantenimientos WHERE id=?`, [id]);
-  const unidadId = rowU?.unidad_id;
-  console.log('[CERRAR] unidadId=', unidadId);
-
-  // 3) Reprogramación automática (preventivo) con separación de 7 días
-  if (unidadId) {
-    const plan      = await aiPreventivePlan({ pool, unidadId });
-    const candidata = atLeastTomorrow(avoidSunday(plan.fecha_sugerida));
-    const fecha     = await findNextSpacedDateDB(candidata, 7);
-    const userId    = (req.session.user?.id || 1);
-
-    const trabajosMarcados = Array.isArray(req.body?.hechos) ? req.body.hechos : [];
-    const labelHechos = trabajosMarcados.length ? ` / Hechos: ${trabajosMarcados.join(', ')}` : '';
-    const motivo = (plan.motivo_sugerido || 'Plan preventivo sugerido') + labelHechos;
-
-    console.log('[REPROGRAMAR] fecha=', fecha, 'motivo=', motivo);
-
-    await pool.query(`
-      INSERT INTO mantenimientos (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
-      SELECT u.id, u.cedis_id, 'PREVENTIVO', ?, ?, u.kilometraje, 1, ?
-        FROM unidades u
-       WHERE u.id=?`,
-      [motivo, fecha, userId, unidadId]
-    );
-    console.log('[REPROGRAMAR] insert OK');
-  }
-
-  // 4) Liberar unidad si no tiene otros abiertos
-  if (unidadId) {
-    const [[ab]] = await pool.query(
-      `SELECT COUNT(*) as abiertos FROM mantenimientos WHERE unidad_id=? AND fecha_fin IS NULL`,
-      [unidadId]
-    );
-    if (!ab?.abiertos) {
-      await pool.query(`UPDATE unidades SET estado='ACTIVA' WHERE id=?`, [unidadId]);
-      console.log('[CERRAR] Unidad liberada');
-    }
-  }
-
-  // Responder: JSON si viene de AJAX, si no, redirect
-  if (req.headers.accept && req.headers.accept.includes('application/json')) {
-    return res.json({ ok: true });
-  }
-  return res.redirect('/mantenimientos');
+  res.redirect('/unidades');
 });
 
-// ===== IA: Endpoints auxiliares (por si los usas en otros lugares) =====
-app.post('/ai/clasificar', async (req, res) => {
-  const { motivo, placa, km, cedis_id } = req.body || {};
-  const out = await aiClassify({ motivo, placa, km, cedis: cedis_id });
-  res.json(out);
-});
-app.get('/ai/proximo/:placa', async (req, res) => {
-  const out = await aiSuggestNext({ pool, placa: req.params.placa });
-  res.json(out);
-});
-app.get('/ai/resumen/:id', async (req, res) => {
-  const out = await aiSummarize({ pool, mantId: req.params.id });
-  res.json(out);
-});
-
-// Programar por IA (una o todas) con separación de 7 días
-app.post('/ai/programar', async (req, res) => {
-  try {
-    const { unidad_id } = req.body || {};
-    let unidadesTarget = [];
-
-    if (unidad_id) {
-      const [u] = await pool.query(`SELECT * FROM unidades WHERE id=?`, [unidad_id]);
-      if (u?.length) unidadesTarget = [u[0]];
-    } else {
-      const [uu] = await pool.query(`SELECT * FROM unidades WHERE estado!='INACTIVA' ORDER BY placa`);
-      unidadesTarget = uu || [];
-    }
-
-    for (const u of unidadesTarget) {
-      const plan      = await aiPreventivePlan({ pool, unidadId: u.id });
-      const candidata = atLeastTomorrow(avoidSunday(plan.fecha_sugerida));
-      const fecha     = await findNextSpacedDateDB(candidata, 7);
-      const motivo    = plan.motivo_sugerido || `Plan preventivo: ${(plan.tareas || []).join(', ')}`;
-
-      await pool.query(
-        `INSERT INTO mantenimientos (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
-         VALUES (?,?,?,?,?,?,1,?)`,
-        [u.id, u.cedis_id || null, 'PREVENTIVO', motivo, fecha, u.kilometraje || null, (req.session.user?.id || 1)]
-      );
-    }
-
-    res.json({ ok: true });
-  } catch (e) {
-    console.error('ai/programar error', e);
-    res.status(500).json({ ok: false, error: 'No se pudo programar automáticamente.' });
-  }
-});
-
-// ===== API para Power BI =====
-app.get('/api/mantenimientos', async (req, res) => {
-  const [rows] = await pool.query(`
-    SELECT m.id, u.placa, c.nombre as cedis, m.tipo, m.motivo, m.fecha_inicio, m.fecha_fin,
-           m.duracion_dias, m.km_al_entrar,
-           CASE WHEN m.fecha_fin IS NULL THEN 1 ELSE 0 END as en_taller
-    FROM mantenimientos m
-    JOIN unidades u ON u.id=m.unidad_id
-    LEFT JOIN cedis c ON c.id=m.cedis_id
-    ORDER BY m.id DESC
+// Mantenimientos abiertos
+app.get('/mantenimientos', async (req, res) => {
+  const [mants] = await pool.query(`
+    SELECT m.*, u.placa, c.nombre AS cedis_nombre
+      FROM mantenimientos m
+      JOIN unidades u ON u.id=m.unidad_id
+      LEFT JOIN cedis c ON c.id=m.cedis_id
+     WHERE m.fecha_fin IS NULL
+     ORDER BY m.fecha_inicio ASC, m.id DESC
   `);
-  res.json(rows);
+  res.render('mantenimientos_list', { title: 'Mantenimientos', mants });
 });
 
+// Historial (cerrados)
+app.get('/historial', async (req, res) => {
+  const [rows] = await pool.query(`
+    SELECT m.*, u.placa, c.nombre AS cedis_nombre
+      FROM mantenimientos m
+      JOIN unidades u ON u.id=m.unidad_id
+      LEFT JOIN cedis c ON c.id=m.cedis_id
+     WHERE m.fecha_fin IS NOT NULL
+     ORDER BY m.fecha_fin DESC, m.id DESC
+  `);
+  res.render('historial', { title: 'Historial', items: rows });
+});
+
+// Historial por placa
+app.get('/historial/:placa', async (req, res) => {
+  const placa = req.params.placa.toUpperCase();
+  const [[u]] = await pool.query(`SELECT id, placa FROM unidades WHERE placa=? LIMIT 1`, [placa]);
+  if (!u) return res.status(404).send('Placa no encontrada');
+  const [rows] = await pool.query(`
+    SELECT m.*, c.nombre AS cedis_nombre
+      FROM mantenimientos m
+      LEFT JOIN cedis c ON c.id=m.cedis_id
+     WHERE m.unidad_id=?
+     ORDER BY m.id DESC`, [u.id]);
+  res.render('historial_placa', { title: `Historial ${placa}`, placa, items: rows });
+});
+
+// Programar por IA (simple): crea un preventivo futuro evitando domingos y choques
+app.post('/unidades/:id/programar', async (req, res) => {
+  const unidadId = Number(req.params.id);
+  // base: 45 días desde el último fin o desde hoy
+  const [hist] = await pool.query(`
+    SELECT fecha_fin, fecha_inicio
+      FROM mantenimientos
+     WHERE unidad_id=?
+     ORDER BY id DESC
+     LIMIT 1`, [unidadId]);
+  const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
+  let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
+  let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
+  if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
+  candidata = await fechaSinChoque(candidata);
+
+  const [[u]] = await pool.query(`SELECT u.id, u.cedis_id FROM unidades u WHERE u.id=?`, [unidadId]);
+  await pool.query(
+    `INSERT INTO mantenimientos (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
+     VALUES (?,?,?,?,?,?,1,?)`,
+    [unidadId, u?.cedis_id || null, 'PREVENTIVO', 'Plan preventivo sugerido', candidata, null, req.session.user?.id || null]
+  );
+  res.redirect('/mantenimientos');
+});
+
+// Cerrar “Se realizó” + reprogramar automático
+app.post('/mantenimientos/:id/realizado', async (req, res) => {
+  const id = Number(req.params.id);
+  const { tareas = '', notas = '' } = req.body;
+  const hoy = dayjs().format('YYYY-MM-DD');
+
+  // cierra
+  await pool.query(`
+    UPDATE mantenimientos
+       SET fecha_fin=?, duracion_dias=DATEDIFF(?, COALESCE(fecha_inicio, ?))
+     WHERE id=?`,
+    [hoy, hoy, hoy, id]
+  );
+
+  // unidad de ese mantenimiento
+  const [[row]] = await pool.query(`SELECT unidad_id FROM mantenimientos WHERE id=?`, [id]);
+  if (!row) return res.redirect('/mantenimientos');
+  const unidadId = row.unidad_id;
+
+  // reprograma (misma lógica que programar)
+  const base = hoy;
+  let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
+  if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
+  candidata = await fechaSinChoque(candidata);
+
+  const [[u]] = await pool.query(`SELECT u.id, u.cedis_id FROM unidades u WHERE u.id=?`, [unidadId]);
+
+  const motivo = `Preventivo programado. Tareas hechas: ${tareas || 'N/D'}. Notas: ${notas || 'N/D'}`;
+  await pool.query(
+    `INSERT INTO mantenimientos (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
+     VALUES (?,?,?,?,?,?,1,?)`,
+    [unidadId, u?.cedis_id || null, 'PREVENTIVO', motivo, candidata, null, req.session.user?.id || null]
+  );
+
+  // libera la unidad si no hay otros abiertos
+  const [[ab]] = await pool.query(
+    `SELECT COUNT(*) AS abiertos
+       FROM mantenimientos
+      WHERE unidad_id=? AND fecha_fin IS NULL`, [unidadId]);
+  if (ab.abiertos === 0) {
+    await pool.query(`UPDATE unidades SET estado='ACTIVA' WHERE id=?`, [unidadId]);
+  }
+
+  res.redirect('/mantenimientos');
+});
+
+// ============ SEED: TRANSPORTADORA (extra) =====================
+app.get('/seed/transportadora-extra', async (req, res) => {
+  try {
+    // CEDIS
+    await pool.query(`INSERT IGNORE INTO cedis (nombre) VALUES ('TRANSPORTADORA')`);
+    const [[ced]] = await pool.query(`SELECT id FROM cedis WHERE nombre='TRANSPORTADORA' LIMIT 1`);
+    const cedisId = ced?.id;
+
+    // Placas solicitadas
+    const placas = [
+      'C150804','S25526','C143298','S35797','C153449','S25816','C167058','S35798','C156152','S30811',
+      'S35825','C157184','S32586','S36179','C157631','S35741','S36183','C162129','S25772','C162503',
+      'S28102','C162985','S28322','C163630','S32587','C164206','S34202','C167020','S35742','C168961',
+      'S25513','C169541','S26048','C169804','S27368','C169965','S34193','C170014','S12404','C170751',
+      'S19984','C170869','S34194','C170900','S35759','C171297','S23630','C171394','S30815','C173827',
+      'S34200','C174021','S35760','C174563','S37248','C174582','S37243','C175547','C178423','C178439',
+      'C177959','C164025','C162227'
+    ];
+
+    let insertados = 0, existentes = 0;
+    for (const placa of placas) {
+      const [u] = await pool.query(`SELECT id FROM unidades WHERE placa=? LIMIT 1`, [placa]);
+      if (Array.isArray(u) && u.length) { existentes++; continue; }
+      await pool.query(
+        `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
+         VALUES (?,?,?,?,?)`,
+        [placa, placa.startsWith('S') ? 'SEMIRREMOLQUE' : 'CAMION', cedisId, 0, 'ACTIVA']
+      );
+      insertados++;
+    }
+
+    res.send(`✅ TRANSPORTADORA extra: insertadas=${insertados}, existentes=${existentes}, cedis=${cedisId}`);
+  } catch (e) {
+    console.error('seed/transportadora-extra error', e);
+    res.status(500).send('No se pudo ejecutar el seed.');
+  }
+});
+
+// ---------- Arranque ----------
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`✅ Servidor en http://localhost:${PORT}`));
+app.listen(PORT, () => {
+  console.log(`✅ Servidor en http://localhost:${PORT}`);
+});
