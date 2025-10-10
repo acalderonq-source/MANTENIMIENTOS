@@ -1,0 +1,71 @@
+<!-- Botón flotante y modal de chat IA -->
+<button id="fabChat" class="fab" title="Preguntar a la IA">💬</button>
+
+<div id="chatModal" class="chat-modal hidden" aria-hidden="true">
+  <div class="chat-card">
+    <div class="chat-header">
+      <strong>Asistente IA</strong>
+      <button id="chatClose" class="chat-close" title="Cerrar">×</button>
+    </div>
+    <div id="chatBody" class="chat-body">
+      <div class="msg ia">Hola 👋 ¿qué necesitas? Pregunta por una placa (ej. C167062) o “próximos mantenimientos”.</div>
+    </div>
+    <div class="chat-input">
+      <input id="chatText" type="text" placeholder="Escribe tu pregunta..." />
+      <button id="chatSend">Enviar</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const fab = document.getElementById('fabChat');
+  const modal = document.getElementById('chatModal');
+  const btnClose = document.getElementById('chatClose');
+  const body = document.getElementById('chatBody');
+  const input = document.getElementById('chatText');
+  const send = document.getElementById('chatSend');
+
+  const open = () => { modal.classList.remove('hidden'); input.focus(); };
+  const close = () => { modal.classList.add('hidden'); };
+
+  fab.addEventListener('click', open);
+  btnClose.addEventListener('click', close);
+  input.addEventListener('keypress', (e) => { if (e.key === 'Enter') send.click(); });
+
+  function appendMsg(text, who='user'){
+    const div = document.createElement('div');
+    div.className = 'msg ' + (who === 'user' ? 'user' : 'ia');
+    div.textContent = text;
+    body.appendChild(div);
+    body.scrollTop = body.scrollHeight;
+  }
+
+  async function ask(msg){
+    appendMsg(msg, 'user');
+    input.value = '';
+    try {
+      const res = await fetch('/ai/chat', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ message: msg })
+      });
+      if (!res.ok) {
+        const t = await res.text();
+        appendMsg('Error: ' + t, 'ia');
+        return;
+      }
+      const data = await res.json();
+      appendMsg(data.reply || 'Sin respuesta.', 'ia');
+    } catch(err){
+      appendMsg('No se pudo conectar con IA.', 'ia');
+    }
+  }
+
+  send.addEventListener('click', () => {
+    const msg = (input.value || '').trim();
+    if (!msg) return;
+    ask(msg);
+  });
+})();
+</script>

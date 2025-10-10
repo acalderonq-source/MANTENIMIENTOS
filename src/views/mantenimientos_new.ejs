@@ -1,0 +1,46 @@
+<section class="card">
+  <h1>Nuevo mantenimiento</h1>
+  <form method="post" action="/mantenimientos">
+    <div class="form-row">
+      <div class="col-2">
+        <label>Unidad</label>
+        <select name="unidad_id" required>
+          <% (unidades||[]).forEach(u=>{ %>
+            <option value="<%= u.id %>"><%= u.placa %> · <%= u.tipo %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div>
+        <label>CEDIS</label>
+        <select name="cedis_id">
+          <option value="">(auto)</option>
+          <% (cedis||[]).forEach(c=>{ %>
+            <option value="<%= c.id %>"><%= c.nombre %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div>
+        <label>Tipo</label>
+        <select name="tipo">
+          <option value="PREVENTIVO">PREVENTIVO</option>
+          <option value="CORRECTIVO">CORRECTIVO</option>
+        </select>
+      </div>
+      <div>
+        <label>Inicio</label>
+        <input type="date" name="fecha_inicio" value="<%= dayjs().format('YYYY-MM-DD') %>">
+      </div>
+    </div>
+
+    <label>Motivo</label>
+    <input type="text" name="motivo" placeholder="Descripción breve">
+
+    <label>Kilometraje al entrar</label>
+    <input type="number" name="km_al_entrar" placeholder="0">
+
+    <div class="form-actions">
+      <button class="btn warning">Guardar</button>
+      <a href="/mantenimientos" class="btn ghost">Cancelar</a>
+    </div>
+  </form>
+</section>

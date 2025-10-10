@@ -1,0 +1,53 @@
+<section class="card">
+  <h1>Editar mantenimiento #<%= mant?.id %></h1>
+  <form method="post" action="/mantenimientos/<%= mant?.id %>">
+    <div class="form-row">
+      <div>
+        <label>Unidad</label>
+        <select name="unidad_id">
+          <% (unidades||[]).forEach(u=>{ %>
+            <option value="<%= u.id %>" <%= u.id===mant.unidad_id?'selected':'' %>><%= u.placa %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div>
+        <label>CEDIS</label>
+        <select name="cedis_id">
+          <% (cedis||[]).forEach(c=>{ %>
+            <option value="<%= c.id %>" <%= c.id===(mant.cedis_id||0)?'selected':'' %>><%= c.nombre %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div>
+        <label>Tipo</label>
+        <select name="tipo">
+          <option value="PREVENTIVO" <%= mant.tipo==='PREVENTIVO'?'selected':'' %> >PREVENTIVO</option>
+          <option value="CORRECTIVO" <%= mant.tipo==='CORRECTIVO'?'selected':'' %> >CORRECTIVO</option>
+        </select>
+      </div>
+      <div>
+        <label>Kilometraje al entrar</label>
+        <input type="number" name="km_al_entrar" value="<%= mant.km_al_entrar || '' %>">
+      </div>
+    </div>
+
+    <label>Motivo</label>
+    <input type="text" name="motivo" value="<%= mant.motivo || '' %>">
+
+    <div class="form-row">
+      <div>
+        <label>Fecha inicio</label>
+        <input type="date" name="fecha_inicio" value="<%= mant.fecha_inicio || '' %>">
+      </div>
+      <div>
+        <label>Fecha fin</label>
+        <input type="date" name="fecha_fin" value="<%= mant.fecha_fin || '' %>">
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button class="btn warning">Guardar cambios</button>
+      <a class="btn ghost" href="/mantenimientos">Volver</a>
+    </div>
+  </form>
+</section>

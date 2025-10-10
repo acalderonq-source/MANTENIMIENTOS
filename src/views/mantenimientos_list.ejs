@@ -1,0 +1,258 @@
+<section class="card">
+  <div class="toolbar">
+    <h1>Mantenimientos (abiertos / programados)</h1>
+    <div class="right">
+      <a class="btn ghost" href="/historial">📜 Historial</a>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Placa</th>
+          <th>CEDIS</th>
+          <th>Tipo</th>
+          <th>Inicio</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <% 
+          var list = Array.isArray(mants) ? mants : [];
+          for (var i=0;i<list.length;i++){
+            var m = list[i];
+        %>
+          <tr data-row="<%= m.id %>" data-unidad="<%= m.unidad_id %>">
+            <td><%= m.id %></td>
+            <td><%= m.placa %></td>
+            <td><%= m.cedis_nombre || 'N/A' %></td>
+            <td><span class="chip chip-orange"><%= m.tipo %></span></td>
+            <td><%= dayjs(m.fecha_inicio).format('DD/MM/YYYY') %></td>
+            <td>
+              <button class="btn success btn-done" data-id="<%= m.id %>">✅ Se realizó</button>
+            </td>
+          </tr>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- Modal IA -->
+<div id="iaModal" class="modal hidden">
+  <div class="modal-card">
+    <div class="modal-hd">
+      <h3>Detalles de cierre</h3>
+      <button class="icon-btn" id="iaClose">✕</button>
+    </div>
+    <div class="modal-bd">
+      <div id="iaLoading" class="muted">Cargando plan de IA…</div>
+
+      <div id="iaContent" class="hidden">
+        <div class="note">
+          <div><strong>Próxima fecha sugerida (IA):</strong> <span id="iaFecha">—</span></div>
+          <div class="muted">Reglas: no hoy, sin domingo, y separación mínima de 7 días entre placas.</div>
+        </div>
+
+        <div class="mt-3">
+          <label><strong>¿Qué se le hizo?</strong></label>
+
+          <div class="row g-2" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin: 8px 0;">
+            <input id="iaSearch" class="input" placeholder="Buscar tarea…" style="flex:1; max-width: 360px;">
+            <button id="iaSelectAll" class="btn ghost" type="button">Seleccionar todo</button>
+            <button id="iaClear" class="btn ghost" type="button">Limpiar</button>
+          </div>
+
+          <div class="row g-2" style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin: 4px 0;">
+            <button class="btn ghost pack" data-pack="menor" type="button">Servicio menor</button>
+            <button class="btn ghost pack" data-pack="mayor" type="button">Servicio mayor</button>
+            <button class="btn ghost pack" data-pack="frenos" type="button">Frenos</button>
+            <button class="btn ghost pack" data-pack="electrico" type="button">Eléctrico</button>
+          </div>
+
+          <div id="iaChips" class="chips-wrap" style="display:flex; gap:8px; flex-wrap:wrap;"></div>
+
+          <div class="row mt-2" style="display:flex; gap:8px; align-items:center;">
+            <input id="iaNewTask" class="input" placeholder="Agregar tarea personalizada…" style="flex:1;">
+            <button id="iaAddTask" class="btn" type="button">Agregar</button>
+          </div>
+        </div>
+
+        <div class="mt-3">
+          <label for="iaNota"><strong>Notas (opcional)</strong></label>
+          <textarea id="iaNota" class="input" rows="3" placeholder="Observaciones del cierre…"></textarea>
+        </div>
+      </div>
+    </div>
+    <div class="modal-ft">
+      <button class="btn ghost" id="iaCancel">Cancelar</button>
+      <button class="btn primary" id="iaConfirm">Confirmar cierre</button>
+    </div>
+  </div>
+</div>
+
+<style>
+  .modal.hidden { display:none; }
+  .modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    display: flex; align-items: center; justify-content: center; z-index: 1000;
+  }
+  .modal-card {
+    width: min(780px, 92vw); background: #fff; border-radius: 14px; padding: 16px 16px 12px;
+    box-shadow: 0 20px 50px rgba(0,0,0,.2);
+  }
+  .modal-hd { display:flex; align-items:center; justify-content:space-between; margin-bottom: 8px; }
+  .modal-bd { max-height: 62vh; overflow: auto; }
+  .modal-ft { display:flex; gap:8px; justify-content:flex-end; margin-top:12px; }
+  .icon-btn { border:none; background:transparent; font-size:18px; cursor:pointer; }
+  .chips-wrap .chip {
+    border: 1px solid #ddd; background: #fafafa; border-radius: 999px;
+    padding: 6px 12px; cursor: pointer; font-size: 14px;
+  }
+  .chips-wrap .chip:hover { background: #f0f0f0; }
+  .chips-wrap .chip-active { background: #ffe6cc; border-color: #ffa94d; }
+</style>
+
+<script>
+  const $ = (sel,root=document)=>root.querySelector(sel);
+  const $$ = (sel,root=document)=>Array.from(root.querySelectorAll(sel));
+
+  let currentMantId = null;
+  let ALL_TASKS = [];
+  let SELECTED = new Set();
+
+  function openModal(){ $('#iaModal').classList.remove('hidden'); }
+  function closeModal(){
+    $('#iaModal').classList.add('hidden');
+    currentMantId=null;
+    $('#iaContent').classList.add('hidden');
+    $('#iaLoading').classList.remove('hidden');
+    $('#iaChips').innerHTML='';
+    $('#iaNota').value='';
+    $('#iaSearch').value='';
+    SELECTED.clear();
+  }
+
+  $('#iaClose').addEventListener('click', closeModal);
+  $('#iaCancel').addEventListener('click', closeModal);
+
+  function renderChips(filter = '') {
+    const wrap = $('#iaChips');
+    wrap.innerHTML = '';
+    const f = filter.trim().toLowerCase();
+
+    ALL_TASKS
+      .filter(t => !f || t.toLowerCase().includes(f))
+      .forEach(t => {
+        const active = SELECTED.has(t);
+        const chip = document.createElement('button');
+        chip.type = 'button';
+        chip.className = 'chip ' + (active ? 'chip-active' : '');
+        chip.textContent = t;
+        chip.addEventListener('click', () => {
+          if (SELECTED.has(t)) SELECTED.delete(t);
+          else SELECTED.add(t);
+          renderChips($('#iaSearch').value);
+        });
+        wrap.appendChild(chip);
+      });
+  }
+
+  function setTasks(tasks) {
+    ALL_TASKS = Array.isArray(tasks) ? tasks : [];
+    SELECTED.clear();
+    renderChips('');
+  }
+
+  const PACKS = {
+    menor: ['Cambio de aceite','Cambio de filtro de aceite','Revisión de niveles (aceite, refrigerante, frenos, dirección)','Revisión de luces (alta/baja/stop/posición)'],
+    mayor: ['Cambio de filtro de aire','Cambio de filtro de combustible','Cambio de refrigerante','Cambio de líquido de frenos','Limpieza de inyectores','Revisión de correas'],
+    frenos: ['Revisión de balatas/zapatas','Ajuste de frenos','Revisión de discos/campanas'],
+    electrico: ['Revisión de batería','Revisión de alternador','Inspección de cableado','Revisión de luces (alta/baja/stop/posición)']
+  };
+
+  // Búsqueda
+  document.addEventListener('input', (e) => {
+    if (e.target.id === 'iaSearch') renderChips(e.target.value);
+  });
+
+  // Agregar tarea manual
+  document.addEventListener('click', (e) => {
+    if (e.target.id === 'iaAddTask') {
+      const val = ($('#iaNewTask').value || '').trim();
+      if (!val) return;
+      if (!ALL_TASKS.includes(val)) ALL_TASKS.unshift(val);
+      SELECTED.add(val);
+      $('#iaNewTask').value = '';
+      renderChips($('#iaSearch').value);
+    }
+  });
+
+  // Seleccionar todo / limpiar
+  document.addEventListener('click', (e) => {
+    if (e.target.id === 'iaSelectAll') {
+      ALL_TASKS.forEach(t => SELECTED.add(t));
+      renderChips($('#iaSearch').value);
+    }
+    if (e.target.id === 'iaClear') {
+      SELECTED.clear();
+      renderChips($('#iaSearch').value);
+    }
+    const packBtn = e.target.closest('.pack');
+    if (packBtn) {
+      const key = packBtn.dataset.pack;
+      (PACKS[key] || []).forEach(t => {
+        if (!ALL_TASKS.includes(t)) ALL_TASKS.push(t);
+        SELECTED.add(t);
+      });
+      renderChips($('#iaSearch').value);
+    }
+  });
+
+  // Click en "Se realizó" => abre modal y trae plan IA
+  document.addEventListener('click', async (ev)=>{
+    const btn = ev.target.closest('.btn-done');
+    if (!btn) return;
+    currentMantId = Number(btn.getAttribute('data-id'));
+    openModal();
+
+    try{
+      const r = await fetch('/ai/plan/' + currentMantId, { headers:{'Accept':'application/json'} });
+      if (!r.ok) throw new Error('HTTP '+r.status);
+      const data = await r.json();
+
+      $('#iaFecha').textContent = data.fecha_sugerida || '—';
+      setTasks(data.tareas || []);
+
+      $('#iaLoading').classList.add('hidden');
+      $('#iaContent').classList.remove('hidden');
+    }catch(e){
+      $('#iaLoading').textContent = 'No se pudo cargar el plan de IA.';
+    }
+  });
+
+  // Confirmar cierre => envía trabajos + nota y reprograma automático
+  $('#iaConfirm').addEventListener('click', async ()=>{
+    if (!currentMantId) return;
+    const hechos = Array.from(SELECTED);
+    const nota   = $('#iaNota').value.trim();
+
+    try{
+      const r = await fetch('/mantenimientos/'+currentMantId+'/realizado', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Accept':'application/json'},
+        body: JSON.stringify({ hechos, nota })
+      });
+      if (!r.ok) throw new Error('HTTP '+r.status);
+
+      // quitar fila en vivo
+      const tr = document.querySelector('tr[data-row="'+currentMantId+'"]');
+      if (tr) tr.remove();
+      closeModal();
+    }catch(e){
+      alert('No se pudo cerrar: '+(e.message||e));
+    }
+  });
+</script>

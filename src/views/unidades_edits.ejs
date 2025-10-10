@@ -1,0 +1,48 @@
+<section class="card">
+  <h1><%= title %></h1>
+
+  <form method="post" action="/unidades/<%= u.id %>?_method=PUT" class="form">
+    <div class="grid">
+      <label>
+        Placa
+        <input name="placa" value="<%= u.placa %>" required />
+      </label>
+      <label>
+        Tipo
+        <input name="tipo" value="<%= u.tipo %>" />
+      </label>
+      <label>
+        CEDIS
+        <select name="cedis_id">
+          <option value="">(sin CEDIS)</option>
+          <% (cedis||[]).forEach(c => { %>
+            <option value="<%= c.id %>" <%= c.id===u.cedis_id?'selected':'' %>><%= c.nombre %></option>
+          <% }) %>
+        </select>
+      </label>
+      <label>
+        Kilometraje
+        <input type="number" name="kilometraje" value="<%= u.kilometraje %>" />
+      </label>
+      <label>
+        Estado
+        <select name="estado">
+          <option value="ACTIVA" <%= u.estado==='ACTIVA'?'selected':'' %>>ACTIVA</option>
+          <option value="EN_TALLER" <%= u.estado==='EN_TALLER'?'selected':'' %>>EN_TALLER</option>
+          <option value="INACTIVA" <%= u.estado==='INACTIVA'?'selected':'' %>>INACTIVA</option>
+        </select>
+      </label>
+    </div>
+    <div style="margin-top:12px">
+      <button class="btn success" type="submit">Guardar</button>
+      <a class="btn" href="/unidades">Cancelar</a>
+    </div>
+  </form>
+
+  <hr/>
+
+  <form method="post" action="/unidades/<%= u.id %>?_method=DELETE"
+        onsubmit="return confirm('¿Eliminar unidad <%= u.placa %> y TODOS sus mantenimientos?');">
+    <button class="btn danger" type="submit">Eliminar unidad</button>
+  </form>
+</section>

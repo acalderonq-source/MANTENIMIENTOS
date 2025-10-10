@@ -1,0 +1,30 @@
+<section class="card">
+  <h1>Historial de <%= placa %></h1>
+
+  <div style="margin-bottom:10px">
+    <a class="btn" href="/mantenimientos">⬅ Volver</a>
+  </div>
+
+  <table class="table">
+    <thead>
+      <tr>
+        <th>ID</th><th>CEDIS</th><th>Tipo</th><th>Motivo</th>
+        <th>Inicio</th><th>Fin</th><th>Días</th><th>Km</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% (items||[]).forEach(m => { %>
+        <tr>
+          <td><%= m.id %></td>
+          <td><%= m.cedis_nombre||'N/A' %></td>
+          <td><%= m.tipo %></td>
+          <td><%= m.motivo||'' %></td>
+          <td><%= dayjs(m.fecha_inicio).format('DD/MM/YYYY') %></td>
+          <td><%= m.fecha_fin ? dayjs(m.fecha_fin).format('DD/MM/YYYY') : '-' %></td>
+          <td><%= m.duracion_dias != null ? m.duracion_dias : '-' %></td>
+          <td><%= m.km_al_entrar != null ? m.km_al_entrar : '-' %></td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</section>

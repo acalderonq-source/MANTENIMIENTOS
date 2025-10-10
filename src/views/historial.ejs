@@ -1,0 +1,39 @@
+<section class="card">
+  <div class="toolbar">
+    <h1>Historial (cerrados)</h1>
+    <div class="right">
+      <a class="btn ghost" href="/mantenimientos">↩︎ Volver</a>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Placa</th>
+          <th>CEDIS</th>
+          <th>Tipo</th>
+          <th>Inicio</th>
+          <th>Fin</th>
+        </tr>
+      </thead>
+      <tbody>
+        <%
+          var list = Array.isArray(mants) ? mants : [];
+          for (var i=0;i<list.length;i++){
+            var m = list[i];
+        %>
+        <tr>
+          <td><%= m.id %></td>
+          <td><%= m.placa %></td>
+          <td><%= m.cedis_nombre || 'N/A' %></td>
+          <td><span class="chip chip-orange"><%= m.tipo %></span></td>
+          <td><%= dayjs(m.fecha_inicio).format('DD/MM/YYYY') %></td>
+          <td><%= dayjs(m.fecha_fin).format('DD/MM/YYYY') %></td>
+        </tr>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</section>

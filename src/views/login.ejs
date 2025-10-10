@@ -1,0 +1,16 @@
+<section class="card" style="max-width:420px;margin:10vh auto">
+  <h1>Iniciar sesión</h1>
+  <% if (typeof error !== 'undefined' && error) { %>
+    <p class="muted" style="color:#dc2626"><%= error %></p>
+  <% } %>
+  <form method="post" action="/login">
+    <label>Usuario</label>
+    <input name="username" type="text" placeholder="admin" required>
+    <label>Contraseña</label>
+    <input name="password" type="password" placeholder="admin123" required>
+    <div class="form-actions">
+      <button class="btn warning">Entrar</button>
+    </div>
+  </form>
+  <p class="muted" style="margin-top:8px">Demo: <strong>admin / admin123</strong></p>
+</section>

@@ -1,0 +1,100 @@
+<section class="card">
+  <div class="toolbar">
+    <h1>Unidades</h1>
+    <div class="right">
+      <button id="btnProgIaAll" class="btn warning">🧠 Programar IA (todas)</button>
+    </div>
+  </div>
+
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Placa</th>
+          <th>Tipo</th>
+          <th>CEDIS</th>
+          <th>Estado</th>
+          <th>Próximo (IA)</th>
+          <th class="col-actions">Acciones</th>
+        </tr>
+      </thead>
+      <tbody>
+        <%
+          var list = Array.isArray(unidades) ? unidades : [];
+          for (var i = 0; i < list.length; i++) {
+            var u = list[i];
+            var prox = (proximos && proximos[u.id]) ? proximos[u.id] : null;
+
+            var estadoClass = 'chip';
+            if (u.estado === 'EN_TALLER') estadoClass += ' chip-danger';
+            else if (u.estado === 'ACTIVA') estadoClass += ' chip-ok';
+        %>
+          <tr>
+            <td data-label="ID"><%= u.id %></td>
+            <td data-label="Placa"><span class="plate"><%= u.placa %></span></td>
+            <td data-label="Tipo"><%= u.tipo || '—' %></td>
+            <td data-label="CEDIS"><%= u.cedis_nombre || 'N/A' %></td>
+            <td data-label="Estado"><span class="<%= estadoClass %>"><%= u.estado %></span></td>
+            <td data-label="Próximo (IA)">
+              <% if (prox) { %>
+                <span class="chip chip-next"><%= dayjs(prox).format('DD/MM/YYYY') %></span>
+              <% } else { %>
+                <span class="muted">—</span>
+              <% } %>
+            </td>
+            <td class="col-actions">
+              <% if (!prox) { %>
+                <button class="btn sm info btn-prog" data-unit="<%= u.id %>" title="Programar preventivo por IA">
+                  🤖 Programar IA
+                </button>
+              <% } else { %>
+                <button class="btn sm ghost btn-prog" data-unit="<%= u.id %>" title="Reprogramar (añadir otra cita)">
+                  ➕ Reprogramar
+                </button>
+              <% } %>
+            </td>
+          </tr>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<script>
+  (function(){
+    // Programar todas
+    var btnAll = document.getElementById('btnProgIaAll');
+    if (btnAll) {
+      btnAll.addEventListener('click', async function(){
+        if (!confirm('¿Programar preventivos por IA para TODAS las unidades activas (una placa por día)?')) return;
+        try{
+          await fetch('/ai/programar', { method:'POST', headers:{'Accept':'application/json'} });
+          location.reload();
+        }catch(e){
+          alert('No se pudo programar por IA.');
+        }
+      });
+    }
+
+    // Programar/Reprogramar por unidad (delegación)
+    document.addEventListener('click', async function(ev){
+      var btn = ev.target.closest('.btn-prog');
+      if (!btn) return;
+      var id = btn.getAttribute('data-unit');
+      if (!id) return;
+      if (!confirm('¿Programar preventivo por IA para la unidad #' + id + '?')) return;
+
+      try{
+        await fetch('/ai/programar', {
+          method:'POST',
+          headers:{'Content-Type':'application/json','Accept':'application/json'},
+          body: JSON.stringify({ unidad_id: Number(id) })
+        });
+        location.reload();
+      }catch(e){
+        alert('No se pudo programar por IA.');
+      }
+    });
+  })();
+</script>

@@ -1,0 +1,4 @@
+# Para usar memoria (sin MySQL)
+DB_DRIVER=MEMORY
+PORT=3000
+SESSION_SECRET=algo_super_secreto
