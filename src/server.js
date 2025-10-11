@@ -7,7 +7,10 @@ import dotenv from 'dotenv';
 import methodOverride from 'method-override';
 import expressLayouts from 'express-ejs-layouts';
 import dayjs from 'dayjs';
-import { pool } from './db.js'; // <- MySQL (asegúrate que exista src/db.js)
+import ExcelJS from 'exceljs';
+import fs from 'fs';
+import fsp from 'fs/promises';
+import { pool } from './db.js';
 
 dotenv.config();
 const app = express();
@@ -31,28 +34,25 @@ app.use(session({
   saveUninitialized: false
 }));
 
-// Simular auth para pruebas (si quieres login real, quita esto)
+// Simular auth básica
 app.use((req, res, next) => {
   if (!req.session.user) {
     req.session.user = { id: 1, username: 'admin', rol: 'ADMIN' };
   }
   res.locals.user = req.session.user;
-  res.locals.dayjs = dayjs;
+  res.locals.dayjs = dayjs; // disponible en EJS
   next();
 });
 
-// Helpers de calendario
-function esDomingo(iso) {
-  // 0=domingo
-  return dayjs(iso).day() === 0;
-}
+// ---------- Helpers calendario ----------
+function esDomingo(iso) { return dayjs(iso).day() === 0; } // 0 = domingo
 function siguienteNoDomingo(iso) {
   let d = dayjs(iso);
   while (d.day() === 0) d = d.add(1, 'day');
   return d.format('YYYY-MM-DD');
 }
 async function fechaSinChoque(fechaBase, excluirPlaca = null) {
-  // Evita programar dos placas el mismo día: si existe alguna ya abierta con esa fecha, empuja 1 día
+  // Evitar dos placas el mismo día: si ya hay un mantenimiento abierto ese día, empuja 1 día (saltando domingos)
   let d = dayjs(fechaBase);
   while (true) {
     const fecha = d.format('YYYY-MM-DD');
@@ -67,11 +67,40 @@ async function fechaSinChoque(fechaBase, excluirPlaca = null) {
     const hayChoque = Array.isArray(rows) && rows.some(r => r.placa !== excluirPlaca);
     if (!hayChoque) return fecha;
     d = d.add(1, 'day');
-    if (d.day() === 0) d = d.add(1, 'day'); // no domingo
+    if (d.day() === 0) d = d.add(1, 'day');
   }
 }
 
-// ---------- Rutas ----------
+// Próximo sugerido para una unidad (45 días desde último evento -> evitando domingos/choques)
+async function calcularProximoParaUnidad(unidadId) {
+  const [hist] = await pool.query(
+    `SELECT fecha_fin, fecha_inicio
+       FROM mantenimientos
+      WHERE unidad_id=?
+      ORDER BY id DESC
+      LIMIT 1`, [unidadId]
+  );
+  const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
+  let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
+  let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
+  if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
+  candidata = await fechaSinChoque(candidata);
+  return candidata;
+}
+
+async function programarPreventivo(unidadId, creadoPorUserId) {
+  const prox = await calcularProximoParaUnidad(unidadId);
+  const [[u]] = await pool.query(`SELECT id, cedis_id FROM unidades WHERE id=?`, [unidadId]);
+  await pool.query(
+    `INSERT INTO mantenimientos
+       (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
+     VALUES (?,?,?,?,?,?,1,?)`,
+    [unidadId, u?.cedis_id || null, 'PREVENTIVO', 'Plan preventivo sugerido', prox, null, creadoPorUserId || null]
+  );
+  return prox;
+}
+
+// ---------- Home ----------
 app.get('/', async (req, res) => {
   const [[kpis]] = await pool.query(`
     SELECT
@@ -92,17 +121,42 @@ app.get('/', async (req, res) => {
   res.render('dashboard', { title: 'Dashboard', kpis, mants });
 });
 
-// Unidades
+// ========== Unidades (con filtro CEDIS + proximos) ==========
 app.get('/unidades', async (req, res) => {
-  const [unidades] = await pool.query(`
-    SELECT u.*, c.nombre AS cedis_nombre
-      FROM unidades u
-      LEFT JOIN cedis c ON c.id=u.cedis_id
-     ORDER BY u.placa
-  `);
-  res.render('unidades', { title: 'Unidades', unidades });
+  const { cedis: cedisNombre, cedis_id } = req.query;
+
+  const [cedisLista] = await pool.query(`SELECT id, nombre FROM cedis ORDER BY nombre`);
+
+  let where = '';
+  const params = [];
+  if (cedis_id) { where = 'WHERE u.cedis_id = ?'; params.push(Number(cedis_id)); }
+  else if (cedisNombre) { where = 'WHERE c.nombre = ?'; params.push(cedisNombre); }
+
+  const [unidades] = await pool.query(
+    `SELECT u.id, u.placa, u.tipo, u.kilometraje, u.estado, c.nombre AS cedis_nombre
+       FROM unidades u
+       LEFT JOIN cedis c ON c.id=u.cedis_id
+       ${where}
+      ORDER BY u.placa`,
+    params
+  );
+
+  const proximos = {};
+  for (const u of unidades) {
+    try { proximos[u.id] = await calcularProximoParaUnidad(u.id); }
+    catch { proximos[u.id] = null; }
+  }
+
+  res.render('unidades', {
+    title: 'Unidades',
+    unidades,
+    cedisLista,
+    filtroActual: { cedisNombre: cedisNombre || '', cedisId: cedis_id || '' },
+    proximos
+  });
 });
 
+// Crear unidad (simple)
 app.post('/unidades', async (req, res) => {
   const { placa, tipo, cedis_nombre } = req.body;
   let cedis_id = null;
@@ -114,9 +168,63 @@ app.post('/unidades', async (req, res) => {
   await pool.query(
     `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
      VALUES (?,?,?,?,?)`,
-    [placa, tipo || 'CAMION', cedis_id, 0, 'ACTIVA']
+    [placa.toUpperCase(), (tipo || 'CAMION').toUpperCase(), cedis_id, 0, 'ACTIVA']
   );
   res.redirect('/unidades');
+});
+
+// Programar uno (ruta clásica)
+app.post('/unidades/:id/programar', async (req, res) => {
+  await programarPreventivo(Number(req.params.id), req.session.user?.id);
+  res.redirect('/mantenimientos');
+});
+
+// Endpoint que usa la UI para programar uno o todos
+app.post('/ai/programar', async (req, res) => {
+  try {
+    const creadoPor = req.session.user?.id || null;
+    const body = req.body || {};
+
+    if (body.unidad_id) {
+      const unidadId = Number(body.unidad_id);
+      const prox = await programarPreventivo(unidadId, creadoPor);
+      return res.json({ ok: true, count: 1, unidad_id: unidadId, fecha: prox });
+    }
+
+    const [unidadesActivas] = await pool.query(`SELECT id FROM unidades WHERE estado='ACTIVA' ORDER BY placa`);
+    let count = 0;
+    const fechasAsignadasEnBatch = new Set();
+
+    for (const u of unidadesActivas) {
+      const [hist] = await pool.query(
+        `SELECT fecha_fin, fecha_inicio FROM mantenimientos WHERE unidad_id=? ORDER BY id DESC LIMIT 1`, [u.id]
+      );
+      const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
+      let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
+      let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
+      if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
+      candidata = await fechaSinChoque(candidata);
+
+      let d = dayjs(candidata);
+      while (fechasAsignadasEnBatch.has(d.format('YYYY-MM-DD')) || d.day() === 0) d = d.add(1, 'day');
+      const finalDate = d.format('YYYY-MM-DD');
+      fechasAsignadasEnBatch.add(finalDate);
+
+      const [[ur]] = await pool.query(`SELECT id, cedis_id FROM unidades WHERE id=?`, [u.id]);
+      await pool.query(
+        `INSERT INTO mantenimientos
+           (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
+         VALUES (?,?,?,?,?,?,1,?)`,
+        [u.id, ur?.cedis_id || null, 'PREVENTIVO', 'Plan preventivo sugerido', finalDate, null, creadoPor]
+      );
+      count++;
+    }
+
+    res.json({ ok: true, count });
+  } catch (e) {
+    console.error('POST /ai/programar error', e);
+    res.status(500).json({ ok: false, error: 'No se pudo programar por IA.' });
+  }
 });
 
 // Mantenimientos abiertos
@@ -159,112 +267,182 @@ app.get('/historial/:placa', async (req, res) => {
   res.render('historial_placa', { title: `Historial ${placa}`, placa, items: rows });
 });
 
-// Programar por IA (simple): crea un preventivo futuro evitando domingos y choques
-app.post('/unidades/:id/programar', async (req, res) => {
-  const unidadId = Number(req.params.id);
-  // base: 45 días desde el último fin o desde hoy
-  const [hist] = await pool.query(`
-    SELECT fecha_fin, fecha_inicio
-      FROM mantenimientos
-     WHERE unidad_id=?
-     ORDER BY id DESC
-     LIMIT 1`, [unidadId]);
-  const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
-  let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
-  let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
-  if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
-  candidata = await fechaSinChoque(candidata);
-
-  const [[u]] = await pool.query(`SELECT u.id, u.cedis_id FROM unidades u WHERE u.id=?`, [unidadId]);
-  await pool.query(
-    `INSERT INTO mantenimientos (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
-     VALUES (?,?,?,?,?,?,1,?)`,
-    [unidadId, u?.cedis_id || null, 'PREVENTIVO', 'Plan preventivo sugerido', candidata, null, req.session.user?.id || null]
-  );
-  res.redirect('/mantenimientos');
-});
-
-// Cerrar “Se realizó” + reprogramar automático
-app.post('/mantenimientos/:id/realizado', async (req, res) => {
-  const id = Number(req.params.id);
-  const { tareas = '', notas = '' } = req.body;
-  const hoy = dayjs().format('YYYY-MM-DD');
-
-  // cierra
-  await pool.query(`
-    UPDATE mantenimientos
-       SET fecha_fin=?, duracion_dias=DATEDIFF(?, COALESCE(fecha_inicio, ?))
-     WHERE id=?`,
-    [hoy, hoy, hoy, id]
-  );
-
-  // unidad de ese mantenimiento
-  const [[row]] = await pool.query(`SELECT unidad_id FROM mantenimientos WHERE id=?`, [id]);
-  if (!row) return res.redirect('/mantenimientos');
-  const unidadId = row.unidad_id;
-
-  // reprograma (misma lógica que programar)
-  const base = hoy;
-  let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
-  if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
-  candidata = await fechaSinChoque(candidata);
-
-  const [[u]] = await pool.query(`SELECT u.id, u.cedis_id FROM unidades u WHERE u.id=?`, [unidadId]);
-
-  const motivo = `Preventivo programado. Tareas hechas: ${tareas || 'N/D'}. Notas: ${notas || 'N/D'}`;
-  await pool.query(
-    `INSERT INTO mantenimientos (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
-     VALUES (?,?,?,?,?,?,1,?)`,
-    [unidadId, u?.cedis_id || null, 'PREVENTIVO', motivo, candidata, null, req.session.user?.id || null]
-  );
-
-  // libera la unidad si no hay otros abiertos
-  const [[ab]] = await pool.query(
-    `SELECT COUNT(*) AS abiertos
-       FROM mantenimientos
-      WHERE unidad_id=? AND fecha_fin IS NULL`, [unidadId]);
-  if (ab.abiertos === 0) {
-    await pool.query(`UPDATE unidades SET estado='ACTIVA' WHERE id=?`, [unidadId]);
-  }
-
-  res.redirect('/mantenimientos');
-});
-
-// ============ SEED: TRANSPORTADORA (extra) =====================
-app.get('/seed/transportadora-extra', async (req, res) => {
+// ============ Exportar programados (Excel) =====================
+app.get('/export/programados.xlsx', async (req, res) => {
   try {
-    // CEDIS
-    await pool.query(`INSERT IGNORE INTO cedis (nombre) VALUES ('TRANSPORTADORA')`);
-    const [[ced]] = await pool.query(`SELECT id FROM cedis WHERE nombre='TRANSPORTADORA' LIMIT 1`);
-    const cedisId = ced?.id;
+    const { cedis: cedisNombre, cedis_id } = req.query;
+    let where = `WHERE m.fecha_fin IS NULL AND m.fecha_inicio >= CURDATE()`;
+    const params = [];
+    if (cedis_id) { where += ` AND m.cedis_id = ?`; params.push(Number(cedis_id)); }
+    else if (cedisNombre) { where += ` AND c.nombre = ?`; params.push(cedisNombre); }
 
-    // Placas solicitadas
-    const placas = [
-      'C150804','S25526','C143298','S35797','C153449','S25816','C167058','S35798','C156152','S30811',
-      'S35825','C157184','S32586','S36179','C157631','S35741','S36183','C162129','S25772','C162503',
-      'S28102','C162985','S28322','C163630','S32587','C164206','S34202','C167020','S35742','C168961',
-      'S25513','C169541','S26048','C169804','S27368','C169965','S34193','C170014','S12404','C170751',
-      'S19984','C170869','S34194','C170900','S35759','C171297','S23630','C171394','S30815','C173827',
-      'S34200','C174021','S35760','C174563','S37248','C174582','S37243','C175547','C178423','C178439',
-      'C177959','C164025','C162227'
-    ];
+    const [rows] = await pool.query(
+      `SELECT 
+         m.id, u.placa, c.nombre AS cedis, m.tipo, m.motivo, m.fecha_inicio,
+         m.km_al_entrar, m.reservado_inventario, m.creado_por
+       FROM mantenimientos m
+       JOIN unidades u ON u.id = m.unidad_id
+       LEFT JOIN cedis c ON c.id = m.cedis_id
+       ${where}
+       ORDER BY m.fecha_inicio ASC, u.placa ASC`,
+      params
+    );
 
-    let insertados = 0, existentes = 0;
-    for (const placa of placas) {
-      const [u] = await pool.query(`SELECT id FROM unidades WHERE placa=? LIMIT 1`, [placa]);
-      if (Array.isArray(u) && u.length) { existentes++; continue; }
-      await pool.query(
-        `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
-         VALUES (?,?,?,?,?)`,
-        [placa, placa.startsWith('S') ? 'SEMIRREMOLQUE' : 'CAMION', cedisId, 0, 'ACTIVA']
-      );
-      insertados++;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Programados');
+
+    ws.mergeCells('A1', 'H1'); ws.getCell('A1').value = 'Mantenimientos Programados';
+    ws.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
+    ws.getCell('A1').font = { bold: true, size: 16 }; ws.getRow(1).height = 26;
+
+    ws.mergeCells('A2', 'H2'); ws.getCell('A2').value = `Generado: ${dayjs().format('YYYY-MM-DD HH:mm')}`;
+    ws.getCell('A2').alignment = { horizontal: 'center' }; ws.getCell('A2').font = { italic: true, size: 11 };
+
+    const headers = ['ID', 'Placa', 'CEDIS', 'Tipo', 'Motivo/Notas', 'Fecha Programada', 'KM al entrar', 'Reservado Inv.'];
+    ws.addRow([]); ws.addRow(headers);
+
+    const headerRow = ws.getRow(4);
+    headerRow.eachCell(c => {
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003B73' } };
+      c.border = { top:{style:'thin',color:{argb:'FF1F4E78'}}, left:{style:'thin',color:{argb:'FF1F4E78'}},
+                   bottom:{style:'thin',color:{argb:'FF1F4E78'}}, right:{style:'thin',color:{argb:'FF1F4E78'}} };
+    });
+
+    for (const r of rows) {
+      ws.addRow([
+        r.id, r.placa, r.cedis || 'N/D', r.tipo || 'N/D', r.motivo || 'N/D',
+        dayjs(r.fecha_inicio).format('YYYY-MM-DD'),
+        r.km_al_entrar ?? '', r.reservado_inventario ? 'Sí' : 'No'
+      ]);
     }
 
-    res.send(`✅ TRANSPORTADORA extra: insertadas=${insertados}, existentes=${existentes}, cedis=${cedisId}`);
+    for (let i = 5; i <= ws.rowCount; i++) {
+      const row = ws.getRow(i);
+      row.alignment = { vertical: 'middle' }; row.height = 20;
+      row.eachCell(c => c.border = { top:{style:'thin',color:{argb:'FFBFBFBF'}}, left:{style:'thin',color:{argb:'FFBFBFBF'}},
+                                     bottom:{style:'thin',color:{argb:'FFBFBFBF'}}, right:{style:'thin',color:{argb:'FFBFBFBF'}} });
+      if (i % 2 === 1) row.eachCell(c => c.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFF5F7FB' } });
+    }
+
+    [8,12,22,14,50,16,16,16].forEach((w, idx) => ws.getColumn(idx + 1).width = w);
+    ws.getColumn(5).alignment = { wrapText: true, vertical: 'middle' };
+    ws.getColumn(6).alignment = { horizontal: 'center' };
+    ws.autoFilter = { from: { row:4, column:1 }, to: { row:4, column: headers.length } };
+
+    ws.addRow([]);
+    const infoRow = ws.addRow([`Total programados: ${rows.length}`]);
+    ws.mergeCells(`A${infoRow.number}:H${infoRow.number}`);
+    infoRow.getCell(1).font = { bold: true }; infoRow.getCell(1).alignment = { horizontal: 'right' };
+
+    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition',`attachment; filename="programados_${dayjs().format('YYYYMMDD_HHmm')}.xlsx"`);
+    await wb.xlsx.write(res); res.end();
   } catch (e) {
-    console.error('seed/transportadora-extra error', e);
-    res.status(500).send('No se pudo ejecutar el seed.');
+    console.error('export/programados.xlsx error', e);
+    res.status(500).send('No se pudo generar la planilla.');
+  }
+});
+
+// ============ SEED: Cargar desde /data/*.json (tus archivos) =============
+function normCedisName(x) {
+  if (!x) return null;
+  const t = String(x).trim();
+  const title = t.toLowerCase().split(' ').map(s => s ? s[0].toUpperCase() + s.slice(1) : s).join(' ');
+  if (/^transportadora$/i.test(t)) return 'TRANSPORTADORA';
+  return title;
+}
+function normPlaca(rawId, rawPlaca) {
+  let p = (rawPlaca || rawId || '').toString().trim().toUpperCase();
+  p = p.replace(/\s+/g, '').replace(/^([A-Z]+)-(\d+)$/, '$1$2'); // C-172464 -> C172464
+  if (/^\d+$/.test(p)) p = 'C' + p; // 170751 -> C170751
+  return p;
+}
+function inferTipo({ tipo, negocio, segmento }) {
+  const t = (tipo || '').toString().trim().toUpperCase();
+  if (t) return t;
+  const n = (negocio || '').toString().trim().toUpperCase();
+  const s = (segmento || '').toString().trim().toUpperCase();
+  if (['CABEZAL','CISTERNA','TANDEM','CARRETA'].includes(s)) return s;
+  if (n === 'HINOS') return 'HINO';
+  if (n === 'GRANEL') return 'GRANEL';
+  if (n === 'TECNICOS' || n === 'TECNICO') return 'TECNICO';
+  if (n === 'TALLER') return 'TALLER';
+  if (s === 'HINOS') return 'HINO';
+  if (s === 'GRANEL' || s === 'GRANELES') return 'GRANEL';
+  if (s === 'OTROS') return 'OTROS';
+  return 'CAMION';
+}
+async function ensureCedis(nombre) {
+  const n = normCedisName(nombre);
+  if (!n) return null;
+  await pool.query(`INSERT IGNORE INTO cedis (nombre) VALUES (?)`, [n]);
+  const [[row]] = await pool.query(`SELECT id FROM cedis WHERE nombre=? LIMIT 1`, [n]);
+  return row?.id || null;
+}
+async function readJsonArray(absPath) {
+  if (!fs.existsSync(absPath)) return [];
+  const buf = await fsp.readFile(absPath, 'utf8');
+  try {
+    const data = JSON.parse(buf);
+    return Array.isArray(data) ? data : [];
+  } catch { return []; }
+}
+function mapRawToUniform(raw) {
+  const placa = normPlaca(raw.id, raw.placa);
+  const cedis = raw.cedis ?? raw.CEDIS ?? null;
+  const tipo = inferTipo(raw);
+  return { placa, cedis, tipo };
+}
+
+// Carga todos los archivos JSON de /data especificados:
+app.get('/seed/cargar-archivos', async (req, res) => {
+  try {
+    const DATA_DIR = path.join(process.cwd(), 'data');
+    const files = [
+      'unidades-tecnicos.json',
+      'unidades-alajuela.json',
+      'unidades-granel-cartago.json',
+      'unidades-hinos-cartago.json',
+      'unidades-la-cruz.json',
+      'unidades-transportadora.json',
+      'unidades-todo.json' // opcional
+    ];
+
+    const all = [];
+    for (const fname of files) {
+      const arr = await readJsonArray(path.join(DATA_DIR, fname));
+      if (arr.length) all.push(...arr);
+    }
+
+    let insertados = 0, existentes = 0, errores = 0;
+    const detalles = [];
+
+    for (const raw of all) {
+      try {
+        const u = mapRawToUniform(raw);
+        if (!u.placa) { errores++; detalles.push({ placa:null, error:'Sin placa/id' }); continue; }
+
+        const [ex] = await pool.query(`SELECT id FROM unidades WHERE placa=? LIMIT 1`, [u.placa]);
+        if (Array.isArray(ex) && ex.length) { existentes++; continue; }
+
+        const cedis_id = await ensureCedis(u.cedis);
+        await pool.query(
+          `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
+           VALUES (?,?,?,?,?)`,
+          [u.placa, u.tipo, cedis_id, 0, 'ACTIVA']
+        );
+        insertados++;
+      } catch (e) {
+        errores++; detalles.push({ placa: raw?.placa || raw?.id || null, error: e.message });
+      }
+    }
+
+    res.json({ ok:true, total: all.length, insertados, existentes, errores, detalles });
+  } catch (e) {
+    console.error('seed/cargar-archivos error', e);
+    res.status(500).json({ ok:false, error:'Fallo al cargar desde archivos.' });
   }
 });
 

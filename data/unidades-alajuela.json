@@ -1,0 +1,30 @@
+[
+  { "placa": "C157016", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C157536", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C170136", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C173516", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C174671", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C178651", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "CL275196","cedis": "Alajuela", "negocio": "HINOS" },
+
+  { "placa": "C173517", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C172657", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C164417", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C180977", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "CL279463","cedis": "Alajuela", "negocio": "GRANEL" },
+
+  { "placa": "C155863", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C172458", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C178773", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C164528", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C181758", "cedis": "Alajuela", "negocio": "GRANEL" },
+  { "placa": "C174348", "cedis": "Alajuela", "negocio": "GRANEL" },
+
+  { "placa": "C156674", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C173514", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C181759", "cedis": "Alajuela", "negocio": "GRANEL" },
+
+  { "placa": "C157015", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C172455", "cedis": "Alajuela", "negocio": "HINOS" },
+  { "placa": "C173515", "cedis": "Alajuela", "negocio": "HINOS" }
+]
