@@ -1,87 +1,27 @@
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title><%= title || 'Mantenimientos' %></title>
-  <link rel="stylesheet" href="/css/styles.css" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title><%= typeof title !== 'undefined' ? title : 'App' %></title>
+  <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
-
-  <% if (user) { %>
-  <header class="topbar">
-    <div class="brandline"></div>
-    <div class="brand">
-      <img src="/img/gas-tomza.png" alt="Gas Tomza" />
-      <div class="title">Gas Tomza · Mantenimientos</div>
-      <div class="right"></div>
-    </div>
+  <header class="top">
+    <h1>Mantenimientos</h1>
     <nav>
       <a href="/">Dashboard</a>
-      <a href="/historial">Historial</a>
       <a href="/unidades">Unidades</a>
-      <a href="/mantenimientos" class="nav-mant">Mantenimientos</a>
-      <a href="/logout">Salir</a>
+      <a href="/mantenimientos">Mantenimientos</a>
+      <a href="/historial">Historial</a>
     </nav>
   </header>
-  <% } %>
 
   <main class="container">
+    <% if (typeof errorMsg !== 'undefined' && errorMsg) { %>
+      <div class="alert"><%= errorMsg %></div>
+    <% } %>
     <%- body %>
   </main>
-
-  <% if (user) { %>
-  <!-- FAB Asistente IA -->
-  <button id="fabIa" class="chat-fab" aria-label="Asistente de IA" title="Asistente de IA">
-    <svg width="30" height="30" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <path d="M12 2a7 7 0 0 0-7 7c0 1.9.8 3.6 2.1 4.9L6 20l6-2a7 7 0 1 0 0-16Z" stroke="currentColor" stroke-width="1.6"/>
-      <circle cx="9" cy="10" r="1.2" fill="currentColor"/>
-      <circle cx="12" cy="10" r="1.2" fill="currentColor"/>
-      <circle cx="15" cy="10" r="1.2" fill="currentColor"/>
-    </svg>
-    <span class="fab-label">Asistente IA</span>
-  </button>
-
-  <div id="chatWindow" class="chat-window" role="dialog" aria-label="Chat IA">
-    <div class="chat-header">Asistente IA</div>
-    <div id="chatBody" class="chat-body">
-      <div class="chat-msg">Hola 👋 ¿Qué placa consultamos? (p.ej. C167062)</div>
-    </div>
-    <div class="chat-input">
-      <input id="chatInput" type="text" placeholder="Escribe tu consulta y presiona Enter…">
-      <button id="chatSend" class="btn sm">Enviar</button>
-    </div>
-  </div>
-
-  <script>
-  (() => {
-    const fab    = document.getElementById('fabIa');
-    const win    = document.getElementById('chatWindow');
-    const body   = document.getElementById('chatBody');
-    const input  = document.getElementById('chatInput');
-    const send   = document.getElementById('chatSend');
-    if (!fab) return;
-    const toggle = () => { win.classList.toggle('open'); if (win.classList.contains('open')) input.focus(); };
-    fab.addEventListener('click', toggle);
-    async function ask(){
-      const msg = (input.value || '').trim();
-      if (!msg) return;
-      body.insertAdjacentHTML('beforeend', `<div class="chat-msg"><strong>Tú:</strong> ${msg}</div>`);
-      input.value = '';
-      try{
-        const r = await fetch('/ai/chat', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ message: msg }) });
-        const data = await r.json();
-        body.insertAdjacentHTML('beforeend', `<div class="chat-msg"><strong>IA:</strong> ${data.reply || 'Sin respuesta.'}</div>`);
-        body.scrollTop = body.scrollHeight;
-      }catch(e){
-        body.insertAdjacentHTML('beforeend', `<div class="chat-msg"><strong>IA:</strong> No pude responder ahora.</div>`);
-      }
-    }
-    send.addEventListener('click', ask);
-    input.addEventListener('keydown', (e)=>{ if(e.key==='Enter'){ ask(); } });
-  })();
-  </script>
-  <% } %>
-
 </body>
 </html>

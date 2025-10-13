@@ -1,157 +1,44 @@
-<!-- src/views/unidades.ejs -->
-<section class="card">
-  <div class="toolbar">
-    <h1>Unidades</h1>
+<h2>Unidades</h2>
 
-    <div class="right">
-      <form id="filtroForm" method="get" action="/unidades" class="filters">
-        <select name="cedis_id" id="filtroCedisId" class="select">
-          <option value="">— Todos los CEDIS —</option>
-          <% (cedisLista || []).forEach(c => { %>
-            <option value="<%= c.id %>" <%= (filtroActual?.cedisId == c.id) ? 'selected' : '' %>><%= c.nombre %></option>
-          <% }) %>
-        </select>
+<form method="get" action="/unidades" class="filters">
+  <label>CEDIS:
+    <select name="cedis_id">
+      <option value="">(Todos)</option>
+      <% cedisLista.forEach(c => { %>
+        <option value="<%= c.id %>" <%= (filtroActual.cedisId == c.id ? 'selected' : '') %>><%= c.nombre %></option>
+      <% }) %>
+    </select>
+  </label>
+  <button type="submit">Filtrar</button>
+</form>
 
-        <input type="text" name="cedis" id="filtroCedisNombre" class="input"
-               placeholder="o escribir nombre (p.ej. TRANSPORTADORA)"
-               value="<%= filtroActual?.cedisNombre || '' %>" />
-        <button class="btn primary" type="submit">Aplicar</button>
+<table>
+  <thead><tr><th>Placa</th><th>Tipo</th><th>CEDIS</th><th>Estado</th><th>Próximo sugerido</th><th>Acción</th></tr></thead>
+  <tbody>
+  <% if (!unidades || !unidades.length) { %>
+    <tr><td colspan="6">Sin unidades</td></tr>
+  <% } else { unidades.forEach(u => { %>
+    <tr>
+      <td><%= u.placa %></td>
+      <td><%= u.tipo %></td>
+      <td><%= u.cedis_nombre || 'N/D' %></td>
+      <td><%= u.estado %></td>
+      <td><%= proximos[u.id] || '—' %></td>
+      <td>
+        <form method="post" action="/unidades/<%= u.id %>/programar" style="display:inline">
+          <button>Programar</button>
+        </form>
+      </td>
+    </tr>
+  <% }) } %>
+  </tbody>
+</table>
 
-        <%
-          const qs = new URLSearchParams();
-          if (filtroActual?.cedisId) qs.set('cedis_id', filtroActual.cedisId);
-          if (filtroActual?.cedisNombre) qs.set('cedis', filtroActual.cedisNombre);
-        %>
-        <a class="btn success" href="/export/programados.xlsx?<%= qs.toString() %>">⬇️ Programados (Excel)</a>
-      </form>
-
-      <button id="btnProgIaAll" class="btn warning">🧠 Programar IA (todas)</button>
-    </div>
-  </div>
-
-  <div class="chips">
-    <a class="chip <%= (!filtroActual?.cedisId && !filtroActual?.cedisNombre) ? 'chip-active' : '' %>" href="/unidades">Todos</a>
-    <% (cedisLista || []).forEach(c => { %>
-      <a class="chip <%= (String(filtroActual?.cedisId) === String(c.id)) ? 'chip-active' : '' %>" href="/unidades?cedis_id=<%= c.id %>"><%= c.nombre %></a>
-    <% }) %>
-  </div>
-
-  <div class="table-wrap">
-    <table class="table">
-      <thead>
-        <tr>
-          <th>ID</th><th>Placa</th><th>Tipo</th><th>CEDIS</th><th>Estado</th><th>Próximo (IA)</th><th class="col-actions">Acciones</th>
-        </tr>
-      </thead>
-      <tbody>
-        <%
-          var list = Array.isArray(unidades) ? unidades : [];
-          for (var i = 0; i < list.length; i++) {
-            var u = list[i];
-            var prox = (proximos && proximos[u.id]) ? proximos[u.id] : null;
-
-            var estadoClass = 'chip';
-            if (u.estado === 'EN_TALLER') estadoClass += ' chip-danger';
-            else if (u.estado === 'ACTIVA') estadoClass += ' chip-ok';
-        %>
-          <tr>
-            <td data-label="ID"><%= u.id %></td>
-            <td data-label="Placa"><span class="plate"><%= u.placa %></span></td>
-            <td data-label="Tipo"><%= u.tipo || '—' %></td>
-            <td data-label="CEDIS"><%= u.cedis_nombre || 'N/A' %></td>
-            <td data-label="Estado"><span class="<%= estadoClass %>"><%= u.estado %></span></td>
-            <td data-label="Próximo (IA)">
-              <% if (prox) { %><span class="chip chip-next"><%= dayjs(prox).format('DD/MM/YYYY') %></span><% } else { %><span class="muted">—</span><% } %>
-            </td>
-            <td class="col-actions">
-              <% if (!prox) { %>
-                <button class="btn sm info btn-prog" data-unit="<%= u.id %>" title="Programar preventivo por IA">🤖 Programar IA</button>
-              <% } else { %>
-                <button class="btn sm ghost btn-prog" data-unit="<%= u.id %>" title="Reprogramar (añadir otra cita)">➕ Reprogramar</button>
-              <% } %>
-              <a class="btn sm" href="/historial/<%= u.placa %>" title="Ver historial">🗂️ Historial</a>
-            </td>
-          </tr>
-        <% } %>
-
-        <% if (list.length === 0) { %>
-          <tr><td colspan="7" class="muted center">No hay unidades con el filtro aplicado.</td></tr>
-        <% } %>
-      </tbody>
-    </table>
-  </div>
-</section>
-
-<style>
-  .toolbar{display:flex;gap:16px;align-items:center;justify-content:space-between;padding:10px 14px}
-  .right{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
-  .filters{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-  .select,.input{padding:8px 10px;border:1px solid #d0d4da;border-radius:8px;font-size:14px}
-  .btn{border:1px solid #d0d4da;background:#fff;border-radius:10px;padding:8px 12px;cursor:pointer}
-  .btn.primary{background:#0d6efd;color:#fff;border-color:#0d6efd}
-  .btn.success{background:#198754;color:#fff;border-color:#198754}
-  .btn.warning{background:#f59e0b;color:#fff;border-color:#f59e0b}
-  .btn.info{background:#0ea5e9;color:#fff;border-color:#0ea5e9}
-  .btn.ghost{background:#fff;color:#334155}
-  .btn.sm{padding:6px 9px;font-size:12px}
-  .card{background:#fff;border:1px solid #e5e7eb;border-radius:16px;box-shadow:0 4px 14px rgba(0,0,0,.06);padding:6px 6px}
-  .chips{display:flex;gap:8px;flex-wrap:wrap;padding:8px 12px}
-  .chip{display:inline-flex;align-items:center;gap:6px;background:#eef2f7;color:#334155;border-radius:999px;padding:6px 10px;font-size:12px;border:1px solid #d8dee8}
-  .chip-ok{background:#e8fff3;color:#0f5132;border-color:#b9f2d3}
-  .chip-danger{background:#fff1f2;color:#9f1239;border-color:#f5c2c7}
-  .chip-next{background:#eff6ff;color:#1e40af;border-color:#bfdbfe}
-  .chip-active{outline:2px solid #3b82f6}
-  .muted{color:#6b7280}.center{text-align:center}.plate{font-weight:700;letter-spacing:.5px}
-  .table-wrap{overflow:auto}.table{width:100%;border-collapse:separate;border-spacing:0}
-  .table thead th{position:sticky;top:0;background:#f8fafc;border-bottom:1px solid #e5e7eb;text-align:left;padding:10px 12px;font-size:12px;color:#475569}
-  .table tbody td{border-bottom:1px solid #f1f5f9;padding:10px 12px;font-size:14px;vertical-align:middle}
-  .col-actions{white-space:nowrap;width:1%}
-  @media (max-width: 860px){
-    .table thead{display:none}
-    .table tbody tr{display:block;border:1px solid #e5e7eb;border-radius:12px;margin-bottom:10px}
-    .table tbody td{display:flex;justify-content:space-between}
-    .table tbody td::before{content:attr(data-label);font-weight:600;color:#64748b;padding-right:8px}
-    .col-actions{display:block}
-  }
-</style>
-
-<script>
-  (function(){
-    // Programar todas
-    var btnAll = document.getElementById('btnProgIaAll');
-    if (btnAll) {
-      btnAll.addEventListener('click', async function(){
-        if (!confirm('¿Programar preventivos por IA para TODAS las unidades activas (una placa por día)?')) return;
-        try{
-          const resp = await fetch('/ai/programar', { method:'POST', headers:{'Accept':'application/json'} });
-          if (!resp.ok) throw new Error('Respuesta no OK');
-          location.reload();
-        }catch(e){ alert('No se pudo programar por IA.'); }
-      });
-    }
-
-    // Programar/Reprogramar por unidad
-    document.addEventListener('click', async function(ev){
-      var btn = ev.target.closest('.btn-prog');
-      if (!btn) return;
-      var id = btn.getAttribute('data-unit');
-      if (!id) return;
-      if (!confirm('¿Programar preventivo por IA para la unidad #' + id + '?')) return;
-
-      try{
-        const resp = await fetch('/ai/programar', {
-          method:'POST',
-          headers:{'Content-Type':'application/json','Accept':'application/json'},
-          body: JSON.stringify({ unidad_id: Number(id) })
-        });
-        if (!resp.ok) throw new Error('Respuesta no OK');
-        location.reload();
-      }catch(e){ alert('No se pudo programar por IA.'); }
-    });
-
-    // Auto-submit del select
-    var filtroSelect = document.getElementById('filtroCedisId');
-    var filtroForm = document.getElementById('filtroForm');
-    if (filtroSelect && filtroForm) filtroSelect.addEventListener('change', function(){ filtroForm.submit(); });
-  })();
-</script>
+<hr/>
+<h3>Crear unidad</h3>
+<form method="post" action="/unidades">
+  <label>Placa <input name="placa" required></label>
+  <label>Tipo <input name="tipo" placeholder="CAMION/HINO/GRANEL"></label>
+  <label>CEDIS <input name="cedis_nombre" placeholder="Cartago, Guapiles, ..."></label>
+  <button>Crear</button>
+</form>

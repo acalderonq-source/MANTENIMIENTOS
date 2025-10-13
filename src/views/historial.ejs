@@ -1,39 +1,18 @@
-<section class="card">
-  <div class="toolbar">
-    <h1>Historial (cerrados)</h1>
-    <div class="right">
-      <a class="btn ghost" href="/mantenimientos">↩︎ Volver</a>
-    </div>
-  </div>
-
-  <div class="table-wrap">
-    <table class="table">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Placa</th>
-          <th>CEDIS</th>
-          <th>Tipo</th>
-          <th>Inicio</th>
-          <th>Fin</th>
-        </tr>
-      </thead>
-      <tbody>
-        <%
-          var list = Array.isArray(mants) ? mants : [];
-          for (var i=0;i<list.length;i++){
-            var m = list[i];
-        %>
-        <tr>
-          <td><%= m.id %></td>
-          <td><%= m.placa %></td>
-          <td><%= m.cedis_nombre || 'N/A' %></td>
-          <td><span class="chip chip-orange"><%= m.tipo %></span></td>
-          <td><%= dayjs(m.fecha_inicio).format('DD/MM/YYYY') %></td>
-          <td><%= dayjs(m.fecha_fin).format('DD/MM/YYYY') %></td>
-        </tr>
-        <% } %>
-      </tbody>
-    </table>
-  </div>
-</section>
+<h2>Historial</h2>
+<table>
+  <thead><tr><th>ID</th><th>Placa</th><th>CEDIS</th><th>Tipo</th><th>Inicio</th><th>Fin</th></tr></thead>
+  <tbody>
+  <% if (!items || !items.length) { %>
+    <tr><td colspan="6">Sin historial</td></tr>
+  <% } else { items.forEach(m => { %>
+    <tr>
+      <td><%= m.id %></td>
+      <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
+      <td><%= m.cedis_nombre || 'N/D' %></td>
+      <td><%= m.tipo %></td>
+      <td><%= dayjs(m.fecha_inicio).format('YYYY-MM-DD') %></td>
+      <td><%= m.fecha_fin ? dayjs(m.fecha_fin).format('YYYY-MM-DD') : '—' %></td>
+    </tr>
+  <% }) } %>
+  </tbody>
+</table>

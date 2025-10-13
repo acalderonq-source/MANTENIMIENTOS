@@ -1,46 +1,31 @@
-// scripts/apply_schema.mjs
-import 'dotenv/config';
-import fs from 'fs';
-import path from 'path';
-import mysql from 'mysql2/promise';
+CREATE TABLE IF NOT EXISTS cedis (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  nombre VARCHAR(100) UNIQUE NOT NULL,
+  email VARCHAR(190) NULL
+);
 
-const host = process.env.DB_HOST || process.env.MYSQLHOST;
-const port = Number(process.env.DB_PORT || process.env.MYSQLPORT || 3306);
-const user = process.env.DB_USER || process.env.MYSQLUSER || 'root';
-const password = process.env.DB_PASSWORD || process.env.DB_PASS || process.env.MYSQLPASSWORD || '';
-const database = process.env.DB_NAME || process.env.MYSQLDATABASE || 'railway';
+CREATE TABLE IF NOT EXISTS unidades (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  placa VARCHAR(50) UNIQUE NOT NULL,
+  tipo VARCHAR(50) NOT NULL,
+  cedis_id INT NULL,
+  kilometraje INT NOT NULL DEFAULT 0,
+  estado VARCHAR(20) NOT NULL DEFAULT 'ACTIVA',
+  FOREIGN KEY (cedis_id) REFERENCES cedis(id)
+);
 
-const useSSL = String(process.env.DB_SSL || '').toLowerCase() === 'true';
-const ssl = useSSL ? { rejectUnauthorized: false } : undefined;
-
-const schemaPath = path.join(process.cwd(), 'schema.sql');
-
-async function main() {
-  if (!fs.existsSync(schemaPath)) {
-    console.error(`[ERROR] No existe schema.sql en: ${schemaPath}`);
-    process.exit(1);
-  }
-  const sql = fs.readFileSync(schemaPath, 'utf8').trim();
-  if (!sql) {
-    console.error('[ERROR] schema.sql está vacío');
-    process.exit(1);
-  }
-
-  console.log('[INFO] Conectando a MySQL...', { host, port, user, database, ssl: !!ssl });
-  const conn = await mysql.createConnection({
-    host, port, user, password, ssl, multipleStatements: true
-  });
-
-  // Asegura DB (por si acaso)
-  await conn.query(`CREATE DATABASE IF NOT EXISTS \`${database}\` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;`);
-  await conn.query(`USE \`${database}\`;`);
-  console.log('[INFO] Aplicando schema.sql...');
-  await conn.query(sql);
-  await conn.end();
-  console.log('[OK] Schema aplicado en la base:', database);
-}
-
-main().catch(err => {
-  console.error('[FATAL] Error aplicando schema:', err);
-  process.exit(1);
-});
+CREATE TABLE IF NOT EXISTS mantenimientos (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  unidad_id INT NOT NULL,
+  cedis_id INT NULL,
+  tipo VARCHAR(30) NOT NULL,
+  motivo VARCHAR(255) NULL,
+  fecha_inicio DATE NOT NULL,
+  fecha_fin DATE NULL,
+  duracion_dias INT NULL,
+  km_al_entrar INT NULL,
+  reservado_inventario TINYINT(1) NOT NULL DEFAULT 0,
+  creado_por INT NULL,
+  FOREIGN KEY (unidad_id) REFERENCES unidades(id),
+  FOREIGN KEY (cedis_id) REFERENCES cedis(id)
+);

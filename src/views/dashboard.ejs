@@ -1,56 +1,27 @@
-<section class="kpi">
-  <div class="tile">
-    <div class="label">Unidades</div>
-    <div class="value"><%= kpis.unidades %></div>
-  </div>
-  <div class="tile">
-    <div class="label">En taller</div>
-    <div class="value"><%= kpis.en_taller %></div>
-  </div>
-  <div class="tile">
-    <div class="label">Ingresos hoy</div>
-    <div class="value"><%= kpis.hoy %></div>
-  </div>
-</section>
-
-<section class="card lm-card">
-  <div class="lm-header">
-    <div>
-      <h2>Últimos mantenimientos</h2>
-      <p class="muted">Actualizado <%= dayjs().format('DD/MM/YYYY HH:mm') %></p>
-    </div>
-    <a href="/mantenimientos" class="btn ghost">Ver todos</a>
+<section>
+  <h2>Dashboard</h2>
+  <div class="kpis">
+    <div class="kpi"><div class="kpi-num"><%= kpis.unidades %></div><div class="kpi-label">Unidades</div></div>
+    <div class="kpi"><div class="kpi-num"><%= kpis.en_taller %></div><div class="kpi-label">En taller</div></div>
+    <div class="kpi"><div class="kpi-num"><%= kpis.hoy %></div><div class="kpi-label">Programados hoy</div></div>
   </div>
 
-  <div class="table-wrap">
-    <table class="pro-table">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>Placa / CEDIS</th>
-          <th>Tipo</th>
-          <th>Inicio</th>
-          <th>Fin</th>
-          <th>Días</th>
-        </tr>
-      </thead>
-      <tbody>
-        <% (mants||[]).forEach(m => { %>
-          <tr>
-            <td data-label="ID"><span class="muted">#<%= m.id %></span></td>
-            <td data-label="Placa / CEDIS">
-              <div class="stack">
-                <span class="plate"><%= m.placa || 'N/A' %></span>
-                <span class="cedis-chip"><%= m.cedis || 'N/A' %></span>
-              </div>
-            </td>
-            <td data-label="Tipo"><span class="badge badge-mant"><%= m.tipo %></span></td>
-            <td data-label="Inicio"><%= m.fecha_inicio ? dayjs(m.fecha_inicio).format('DD/MM/YYYY') : '—' %></td>
-            <td data-label="Fin"><%= m.fecha_fin ? dayjs(m.fecha_fin).format('DD/MM/YYYY') : '—' %></td>
-            <td data-label="Días"><%= (m.duracion_dias ?? '—') %></td>
-          </tr>
-        <% }) %>
-      </tbody>
-    </table>
-  </div>
+  <h3>Últimos movimientos</h3>
+  <table>
+    <thead><tr><th>ID</th><th>Placa</th><th>CEDIS</th><th>Tipo</th><th>Inicio</th><th>Fin</th></tr></thead>
+    <tbody>
+    <% if (!mants || !mants.length) { %>
+      <tr><td colspan="6">Sin datos</td></tr>
+    <% } else { mants.forEach(m => { %>
+      <tr>
+        <td><%= m.id %></td>
+        <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
+        <td><%= m.cedis || 'N/D' %></td>
+        <td><%= m.tipo %></td>
+        <td><%= dayjs(m.fecha_inicio).format('YYYY-MM-DD') %></td>
+        <td><%= m.fecha_fin ? dayjs(m.fecha_fin).format('YYYY-MM-DD') : '—' %></td>
+      </tr>
+    <% }) } %>
+    </tbody>
+  </table>
 </section>
