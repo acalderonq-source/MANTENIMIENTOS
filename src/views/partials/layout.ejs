@@ -1,28 +1,27 @@
+<!-- views/partials/layout.ejs -->
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
-  <title><%= typeof title !== 'undefined' ? title : 'App' %></title>
-  <link rel="stylesheet" href="/styles.css"/>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title><%= title || 'Mantenimientos' %></title>
+  <link rel="stylesheet" href="/styles.css?v=3"/>
 </head>
 <body>
   <header class="top">
-    <h1>Mantenimientos</h1>
+    <div class="brand" style="font-weight:800">Mantenimientos</div>
     <nav>
       <a href="/">Dashboard</a>
       <a href="/unidades">Unidades</a>
       <a href="/mantenimientos">Mantenimientos</a>
       <a href="/historial">Historial</a>
     </nav>
+    <div style="margin-left:auto; opacity:.8; font-size:13px;">
+      <%= (user && user.username) ? user.username : '' %>
+    </div>
   </header>
-
   <main class="container">
-    <% if (typeof errorMsg !== 'undefined' && errorMsg) { %>
-      <div class="alert"><%= errorMsg %></div>
-    <% } %>
     <%- body %>
   </main>
 </body>
 </html>
-<link rel="stylesheet" href="/styles.css?v=2"/>

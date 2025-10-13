@@ -10,33 +10,43 @@ import dayjs from 'dayjs';
 import ExcelJS from 'exceljs';
 import fs from 'fs';
 import fsp from 'fs/promises';
-import cron from 'node-cron';
-import nodemailer from 'nodemailer';
-import { pool, pingDb } from './db.js';
+import { pool } from './db.js';
+
+import {
+  aiClassify,
+  aiSummarize,
+  aiSuggestNext,
+  aiPreventivePlan
+} from './services/ai.js';
 
 dotenv.config();
+
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 
-// ---------- App base ----------
+// ========= Motor de vistas =========
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(expressLayouts);
 app.set('layout', 'partials/layout');
 
+// ========= Middlewares base =========
 app.use(express.urlencoded({ extended: true }));
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json());
 app.use(methodOverride('_method'));
-app.use(express.static(path.join(__dirname, '../public')));
 
+// estáticos (CSS / imágenes / JS del browser)
+app.use(express.static(path.join(process.cwd(), 'public')));
+
+// sesión simple
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev_secret',
   resave: false,
   saveUninitialized: false
 }));
 
-// Simular auth básica
+// usuario simulado + dayjs a las vistas
 app.use((req, res, next) => {
   if (!req.session.user) {
     req.session.user = { id: 1, username: 'admin', rol: 'ADMIN' };
@@ -46,7 +56,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ---------- Helpers calendario ----------
+// ========= Helpers mínimos =========
 function esDomingo(iso) { return dayjs(iso).day() === 0; }
 function siguienteNoDomingo(iso) {
   let d = dayjs(iso);
@@ -71,6 +81,7 @@ async function fechaSinChoque(fechaBase, excluirPlaca = null) {
     if (d.day() === 0) d = d.add(1, 'day');
   }
 }
+
 async function calcularProximoParaUnidad(unidadId) {
   const [hist] = await pool.query(
     `SELECT fecha_fin, fecha_inicio
@@ -79,13 +90,14 @@ async function calcularProximoParaUnidad(unidadId) {
       ORDER BY id DESC
       LIMIT 1`, [unidadId]
   );
-  const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
+  const ultimo = hist?.[0] || null;
   let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
   let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
   if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
   candidata = await fechaSinChoque(candidata);
   return candidata;
 }
+
 async function programarPreventivo(unidadId, creadoPorUserId) {
   const prox = await calcularProximoParaUnidad(unidadId);
   const [[u]] = await pool.query(`SELECT id, cedis_id FROM unidades WHERE id=?`, [unidadId]);
@@ -98,142 +110,65 @@ async function programarPreventivo(unidadId, creadoPorUserId) {
   return prox;
 }
 
-// ---------- Salud / Debug ----------
-app.get('/healthz', (req, res) => res.send('ok'));
-app.get('/debug/env', (req, res) => {
-  const mask = { ...process.env };
-  if (mask.DB_PASSWORD) mask.DB_PASSWORD = '***';
-  res.json({
-    NODE_ENV: mask.NODE_ENV,
-    DB_HOST: mask.DB_HOST,
-    DB_PORT: mask.DB_PORT,
-    DB_USER: mask.DB_USER,
-    DB_NAME: mask.DB_NAME,
-    DB_SSL: mask.DB_SSL,
-    TZ: mask.TZ
-  });
-});
-app.get('/debug/dbping', async (req, res) => {
-  try { res.json({ ok: await pingDb() }); }
-  catch (e) { res.status(500).json({ ok:false, error: e.message }); }
-});
-app.get('/debug/unidades', async (req, res) => {
-  try {
-    const [rows] = await pool.query(`SELECT * FROM unidades ORDER BY id DESC LIMIT 50`);
-    res.json({ total: rows.length, muestra: rows });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-app.get('/debug/cedis', async (req, res) => {
-  try {
-    const [rows] = await pool.query(`SELECT * FROM cedis ORDER BY nombre`);
-    res.json({ cedis: rows });
-  } catch (e) { res.status(500).json({ error: e.message }); }
-});
-
-// ---------- Home ----------
+// ========= Rutas UI =========
 app.get('/', async (req, res) => {
-  try {
-    const [[kpis]] = await pool.query(`
-      SELECT
-        (SELECT COUNT(*) FROM unidades) AS unidades,
-        (SELECT COUNT(*) FROM mantenimientos WHERE fecha_fin IS NULL) AS en_taller,
-        (SELECT COUNT(*) FROM mantenimientos WHERE DATE(fecha_inicio)=CURDATE()) AS hoy
-    `);
+  const [[kpis]] = await pool.query(`
+    SELECT
+      (SELECT COUNT(*) FROM unidades) AS unidades,
+      (SELECT COUNT(*) FROM mantenimientos WHERE fecha_fin IS NULL) AS en_taller,
+      (SELECT COUNT(*) FROM mantenimientos WHERE DATE(fecha_inicio)=CURDATE()) AS hoy
+  `);
 
-    const [mants] = await pool.query(`
-      SELECT m.id, u.placa, c.nombre AS cedis, m.tipo, m.fecha_inicio, m.fecha_fin, m.duracion_dias
-        FROM mantenimientos m
-        JOIN unidades u ON u.id=m.unidad_id
-        LEFT JOIN cedis c ON c.id=m.cedis_id
-       ORDER BY m.id DESC
-       LIMIT 10
-    `);
+  const [mants] = await pool.query(`
+    SELECT m.id, u.placa, c.nombre AS cedis, m.tipo, m.fecha_inicio, m.fecha_fin, m.duracion_dias
+      FROM mantenimientos m
+      JOIN unidades u ON u.id=m.unidad_id
+      LEFT JOIN cedis c ON c.id=m.cedis_id
+     ORDER BY m.id DESC
+     LIMIT 10
+  `);
 
-    res.render('dashboard', { title: 'Dashboard', kpis, mants });
-  } catch (e) {
-    console.error('GET / error:', e.message);
-    res.status(200).render('dashboard', {
-      title: 'Dashboard',
-      kpis: { unidades: 0, en_taller: 0, hoy: 0 },
-      mants: [],
-      errorMsg: '⚠️ Servicio arriba, pero DB no responde. Revisa /debug/dbping'
-    });
-  }
+  res.render('dashboard', { title: 'Dashboard', kpis, mants });
 });
 
-// ========== Unidades ==========
 app.get('/unidades', async (req, res) => {
   const { cedis: cedisNombre, cedis_id } = req.query;
-  try {
-    const [cedisLista] = await pool.query(`SELECT id, nombre FROM cedis ORDER BY nombre`);
+  const [cedisLista] = await pool.query(`SELECT id, nombre FROM cedis ORDER BY nombre`);
 
-    let where = '';
-    const params = [];
-    if (cedis_id) { where = 'WHERE u.cedis_id = ?'; params.push(Number(cedis_id)); }
-    else if (cedisNombre) { where = 'WHERE c.nombre = ?'; params.push(cedisNombre); }
+  let where = '';
+  const params = [];
+  if (cedis_id) { where = 'WHERE u.cedis_id = ?'; params.push(Number(cedis_id)); }
+  else if (cedisNombre) { where = 'WHERE c.nombre = ?'; params.push(cedisNombre); }
 
-    const [unidades] = await pool.query(
-      `SELECT u.id, u.placa, u.tipo, u.kilometraje, u.estado, c.nombre AS cedis_nombre
-         FROM unidades u
-         LEFT JOIN cedis c ON c.id=u.cedis_id
-         ${where}
-        ORDER BY u.placa`,
-      params
-    );
+  const [unidades] = await pool.query(
+    `SELECT u.id, u.placa, u.tipo, u.kilometraje, u.estado, c.nombre AS cedis_nombre
+       FROM unidades u
+       LEFT JOIN cedis c ON c.id=u.cedis_id
+       ${where}
+      ORDER BY u.placa`, params);
 
-    const proximos = {};
-    for (const u of unidades) {
-      try { proximos[u.id] = await calcularProximoParaUnidad(u.id); }
-      catch { proximos[u.id] = null; }
-    }
-
-    res.render('unidades', {
-      title: 'Unidades',
-      unidades,
-      cedisLista,
-      filtroActual: { cedisNombre: cedisNombre || '', cedisId: cedis_id || '' },
-      proximos
-    });
-  } catch (e) {
-    res.status(200).render('unidades', {
-      title: 'Unidades', unidades: [], cedisLista: [], filtroActual: {}, proximos: {},
-      errorMsg: e.message
-    });
+  const proximos = {};
+  for (const u of unidades) {
+    try { proximos[u.id] = await calcularProximoParaUnidad(u.id); }
+    catch { proximos[u.id] = null; }
   }
-});
 
-// Crear unidad (simple)
-app.post('/unidades', async (req, res) => {
-  const { placa, tipo, cedis_nombre } = req.body;
-  try {
-    let cedis_id = null;
-    if (cedis_nombre) {
-      await pool.query(`INSERT IGNORE INTO cedis (nombre) VALUES (?)`, [cedis_nombre]);
-      const [[ced]] = await pool.query(`SELECT id FROM cedis WHERE nombre=? LIMIT 1`, [cedis_nombre]);
-      cedis_id = ced?.id || null;
-    }
-    await pool.query(
-      `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
-       VALUES (?,?,?,?,?)`,
-      [placa.toUpperCase(), (tipo || 'CAMION').toUpperCase(), cedis_id, 0, 'ACTIVA']
-    );
-    res.redirect('/unidades');
-  } catch (e) {
-    res.status(500).send('No se pudo crear unidad: ' + e.message);
-  }
+  res.render('unidades', {
+    title: 'Unidades',
+    unidades,
+    cedisLista,
+    filtroActual: { cedisNombre: cedisNombre || '', cedisId: cedis_id || '' },
+    proximos
+  });
 });
 
 // Programar uno
 app.post('/unidades/:id/programar', async (req, res) => {
-  try {
-    await programarPreventivo(Number(req.params.id), req.session.user?.id);
-    res.redirect('/mantenimientos');
-  } catch (e) {
-    res.status(500).send('No se pudo programar: ' + e.message);
-  }
+  await programarPreventivo(Number(req.params.id), req.session.user?.id);
+  res.redirect('/mantenimientos');
 });
 
-// Endpoint AI/batch programar
+// API para programar uno o todos (batch)
 app.post('/ai/programar', async (req, res) => {
   try {
     const creadoPor = req.session.user?.id || null;
@@ -253,7 +188,7 @@ app.post('/ai/programar', async (req, res) => {
       const [hist] = await pool.query(
         `SELECT fecha_fin, fecha_inicio FROM mantenimientos WHERE unidad_id=? ORDER BY id DESC LIMIT 1`, [u.id]
       );
-      const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
+      const ultimo = hist?.[0] || null;
       let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
       let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
       if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
@@ -281,251 +216,92 @@ app.post('/ai/programar', async (req, res) => {
   }
 });
 
-// Mantenimientos abiertos
 app.get('/mantenimientos', async (req, res) => {
-  try {
-    const [mants] = await pool.query(`
-      SELECT m.*, u.placa, c.nombre AS cedis_nombre
-        FROM mantenimientos m
-        JOIN unidades u ON u.id=m.unidad_id
-        LEFT JOIN cedis c ON c.id=m.cedis_id
-       WHERE m.fecha_fin IS NULL
-       ORDER BY m.fecha_inicio ASC, m.id DESC
-    `);
-    res.render('mantenimientos_list', { title: 'Mantenimientos', mants });
-  } catch (e) {
-    res.render('mantenimientos_list', { title: 'Mantenimientos', mants: [], errorMsg: e.message });
-  }
-});
-
-// Historial (cerrados)
-app.get('/historial', async (req, res) => {
-  try {
-    const [rows] = await pool.query(`
-      SELECT m.*, u.placa, c.nombre AS cedis_nombre
-        FROM mantenimientos m
-        JOIN unidades u ON u.id=m.unidad_id
-        LEFT JOIN cedis c ON c.id=m.cedis_id
-       WHERE m.fecha_fin IS NOT NULL
-       ORDER BY m.fecha_fin DESC, m.id DESC
+  const [mants] = await pool.query(`
+    SELECT m.*, u.placa, c.nombre AS cedis_nombre
+      FROM mantenimientos m
+      JOIN unidades u ON u.id=m.unidad_id
+      LEFT JOIN cedis c ON c.id=m.cedis_id
+     WHERE m.fecha_fin IS NULL
+     ORDER BY m.fecha_inicio ASC, m.id DESC
   `);
-    res.render('historial', { title: 'Historial', items: rows });
-  } catch (e) {
-    res.render('historial', { title: 'Historial', items: [], errorMsg: e.message });
-  }
+  res.render('mantenimientos_list', { title: 'Mantenimientos', mants });
 });
 
-// Historial por placa
-app.get('/historial/:placa', async (req, res) => {
-  const placa = req.params.placa.toUpperCase();
-  try {
-    const [[u]] = await pool.query(`SELECT id, placa FROM unidades WHERE placa=? LIMIT 1`, [placa]);
-    if (!u) return res.status(404).send('Placa no encontrada');
-    const [rows] = await pool.query(`
-      SELECT m.*, c.nombre AS cedis_nombre
-        FROM mantenimientos m
-        LEFT JOIN cedis c ON c.id=m.cedis_id
-       WHERE m.unidad_id=?
-       ORDER BY m.id DESC`, [u.id]);
-    res.render('historial_placa', { title: `Historial ${placa}`, placa, items: rows });
-  } catch (e) {
-    res.status(500).send(e.message);
-  }
-});
-
-// ============ Exportar programados (Excel) =====================
-app.get('/export/programados.xlsx', async (req, res) => {
-  try {
-    const { cedis: cedisNombre, cedis_id } = req.query;
-    let where = `WHERE m.fecha_fin IS NULL AND m.fecha_inicio >= CURDATE()`;
-    const params = [];
-    if (cedis_id) { where += ` AND m.cedis_id = ?`; params.push(Number(cedis_id)); }
-    else if (cedisNombre) { where += ` AND c.nombre = ?`; params.push(cedisNombre); }
-
-    const [rows] = await pool.query(
-      `SELECT 
-         m.id, u.placa, c.nombre AS cedis, m.tipo, m.motivo, m.fecha_inicio,
-         m.km_al_entrar, m.reservado_inventario, m.creado_por
-       FROM mantenimientos m
-       JOIN unidades u ON u.id = m.unidad_id
-       LEFT JOIN cedis c ON c.id = m.cedis_id
-       ${where}
-       ORDER BY m.fecha_inicio ASC, u.placa ASC`,
-      params
-    );
-
-    const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet('Programados');
-
-    ws.mergeCells('A1', 'H1'); ws.getCell('A1').value = 'Mantenimientos Programados';
-    ws.getCell('A1').alignment = { horizontal: 'center', vertical: 'middle' };
-    ws.getCell('A1').font = { bold: true, size: 16 }; ws.getRow(1).height = 26;
-
-    ws.mergeCells('A2', 'H2'); ws.getCell('A2').value = `Generado: ${dayjs().format('YYYY-MM-DD HH:mm')}`;
-    ws.getCell('A2').alignment = { horizontal: 'center' }; ws.getCell('A2').font = { italic: true, size: 11 };
-
-    const headers = ['ID', 'Placa', 'CEDIS', 'Tipo', 'Motivo/Notas', 'Fecha Programada', 'KM al entrar', 'Reservado Inv.'];
-    ws.addRow([]); ws.addRow(headers);
-
-    const headerRow = ws.getRow(4);
-    headerRow.eachCell(c => {
-      c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-      c.alignment = { horizontal: 'center', vertical: 'middle', wrapText: true };
-      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF003B73' } };
-      c.border = { top:{style:'thin',color:{argb:'FF1F4E78'}}, left:{style:'thin',color:{argb:'FF1F4E78'}},
-                   bottom:{style:'thin',color:{argb:'FF1F4E78'}}, right:{style:'thin',color:{argb:'FF1F4E78'}} };
-    });
-
-    for (const r of rows) {
-      ws.addRow([
-        r.id, r.placa, r.cedis || 'N/D', r.tipo || 'N/D', r.motivo || 'N/D',
-        dayjs(r.fecha_inicio).format('YYYY-MM-DD'),
-        r.km_al_entrar ?? '', r.reservado_inventario ? 'Sí' : 'No'
-      ]);
-    }
-
-    for (let i = 5; i <= ws.rowCount; i++) {
-      const row = ws.getRow(i);
-      row.alignment = { vertical: 'middle' }; row.height = 20;
-      row.eachCell(c => c.border = { top:{style:'thin',color:{argb:'FFBFBFBF'}}, left:{style:'thin',color:{argb:'FFBFBFBF'}},
-                                     bottom:{style:'thin',color:{argb:'FFBFBFBF'}}, right:{style:'thin',color:{argb:'FFBFBFBF'}} });
-      if (i % 2 === 1) row.eachCell(c => c.fill = { type:'pattern', pattern:'solid', fgColor:{ argb:'FFF5F7FB' } });
-    }
-
-    [8,12,22,14,50,16,16,16].forEach((w, idx) => ws.getColumn(idx + 1).width = w);
-    ws.getColumn(5).alignment = { wrapText: true, vertical: 'middle' };
-    ws.getColumn(6).alignment = { horizontal: 'center' };
-    ws.autoFilter = { from: { row:4, column:1 }, to: { row:4, column: headers.length } };
-
-    ws.addRow([]);
-    const infoRow = ws.addRow([`Total programados: ${rows.length}`]);
-    ws.mergeCells(`A${infoRow.number}:H${infoRow.number}`);
-    infoRow.getCell(1).font = { bold: true }; infoRow.getCell(1).alignment = { horizontal: 'right' };
-
-    res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition',`attachment; filename="programados_${dayjs().format('YYYYMMDD_HHmm')}.xlsx"`);
-    await wb.xlsx.write(res); res.end();
-  } catch (e) {
-    console.error('export/programados.xlsx error', e);
-    res.status(500).send('No se pudo generar la planilla.');
-  }
-});
-
-// ============ SEED JSON por HTTP =================
-function normCedisName(x) {
-  if (!x) return null;
-  const t = String(x).trim();
-  const title = t.toLowerCase().split(' ').map(s => s ? s[0].toUpperCase() + s.slice(1) : s).join(' ');
-  if (/^transportadora$/i.test(t)) return 'TRANSPORTADORA';
-  return title;
-}
-function normPlaca(rawId, rawPlaca) {
-  let p = (rawPlaca || rawId || '').toString().trim().toUpperCase();
-  p = p.replace(/\s+/g, '').replace(/^([A-Z]+)-(\d+)$/, '$1$2');
-  if (/^\d+$/.test(p)) p = 'C' + p;
-  return p;
-}
-function inferTipo({ tipo, negocio, segmento }) {
-  const t = (tipo || '').toString().trim().toUpperCase();
-  if (t) return t;
-  const n = (negocio || '').toString().trim().toUpperCase();
-  const s = (segmento || '').toString().trim().toUpperCase();
-  if (['CABEZAL','CISTERNA','TANDEM','CARRETA'].includes(s)) return s;
-  if (n === 'HINOS') return 'HINO';
-  if (n === 'GRANEL') return 'GRANEL';
-  if (n === 'TECNICOS' || n === 'TECNICO') return 'TECNICO';
-  if (n === 'TALLER') return 'TALLER';
-  if (s === 'HINOS') return 'HINO';
-  if (s === 'GRANEL' || s === 'GRANELES') return 'GRANEL';
-  if (s === 'OTROS') return 'OTROS';
-  return 'CAMION';
-}
-
-app.post('/seed/pegar', async (req, res) => {
-  try {
-    const arr = req.body;
-    if (!Array.isArray(arr)) {
-      return res.status(400).json({ ok:false, error:'Manda un arreglo JSON en el body' });
-    }
-    let insertados = 0, existentes = 0, errores = 0;
-    const detalles = [];
-
-    for (const raw of arr) {
-      try {
-        const placa = normPlaca(raw.id, raw.placa);
-        const cedisNombre = normCedisName(raw.cedis ?? raw.CEDIS ?? null);
-        const tipo = inferTipo(raw);
-        if (!placa) throw new Error('Sin placa/id');
-
-        await pool.query(`INSERT IGNORE INTO cedis (nombre) VALUES (?)`, [cedisNombre]);
-        const [[c]] = await pool.query(`SELECT id FROM cedis WHERE nombre=? LIMIT 1`, [cedisNombre]);
-        const cedis_id = c?.id || null;
-
-        const [ex] = await pool.query(`SELECT id FROM unidades WHERE placa=? LIMIT 1`, [placa]);
-        if (Array.isArray(ex) && ex.length) { existentes++; continue; }
-
-        await pool.query(
-          `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
-           VALUES (?,?,?,?,?)`,
-          [placa, tipo, cedis_id, 0, 'ACTIVA']
-        );
-        insertados++;
-      } catch (e) {
-        errores++; detalles.push({ placa: raw?.placa || raw?.id || null, error: e.message });
-      }
-    }
-
-    res.json({ ok:true, insertados, existentes, errores, detallesMuestra: detalles.slice(0,5) });
-  } catch (e) {
-    res.status(500).json({ ok:false, error: e.message });
-  }
-});
-
-// ============ Email: avisos 3 días antes =================
-const mailer = nodemailer.createTransport({
-  host: process.env.SMTP_HOST,
-  port: Number(process.env.SMTP_PORT || 587),
-  secure: String(process.env.SMTP_SECURE || 'false') === 'true',
-  auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-});
-async function enviarAvisos3Dias() {
-  const dia = dayjs().add(3,'day').format('YYYY-MM-DD');
+app.get('/historial', async (req, res) => {
   const [rows] = await pool.query(`
-    SELECT m.id, u.placa, c.nombre AS cedis, c.email, m.fecha_inicio
-    FROM mantenimientos m
-    JOIN unidades u ON u.id=m.unidad_id
-    LEFT JOIN cedis c ON c.id=m.cedis_id
-    WHERE m.fecha_fin IS NULL AND m.fecha_inicio = ?
-  `, [dia]);
-
-  const porEmail = {};
-  for (const r of rows) {
-    if (!r.email) continue;
-    porEmail[r.email] = porEmail[r.email] || [];
-    porEmail[r.email].push(r);
-  }
-  for (const [to, items] of Object.entries(porEmail)) {
-    const placas = items.map(r=>`• ${r.placa}`).join('\n');
-    await mailer.sendMail({
-      to,
-      from: process.env.FROM_EMAIL || process.env.SMTP_USER,
-      subject: `Aviso: mantenimientos en 3 días (${dia})`,
-      text:
-`Hola,
-Estas placas tienen mantenimiento el ${dia}:
-${placas}
-
-Saludos.`
-    });
-  }
-}
-// Cron 08:00 (TZ definido por env)
-cron.schedule('0 8 * * *', () => {
-  enviarAvisos3Dias().catch(e=>console.error('cron avisos error', e));
+    SELECT m.*, u.placa, c.nombre AS cedis_nombre
+      FROM mantenimientos m
+      JOIN unidades u ON u.id=m.unidad_id
+      LEFT JOIN cedis c ON c.id=m.cedis_id
+     WHERE m.fecha_fin IS NOT NULL
+     ORDER BY m.fecha_fin DESC, m.id DESC
+  `);
+  res.render('historial', { title: 'Historial', items: rows });
 });
 
-// ---------- Arranque ----------
+// ========= IA endpoints =========
+app.post('/ai/clasificar', async (req, res) => {
+  try {
+    const { motivo, placa, km, cedis } = req.body || {};
+    const out = await aiClassify({ motivo, placa, km, cedis });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    console.error('POST /ai/clasificar', e);
+    res.status(500).json({ ok: false, error: 'IA clasificar falló' });
+  }
+});
+
+app.get('/ai/resumen/:id', async (req, res) => {
+  try {
+    const out = await aiSummarize({ pool, mantId: Number(req.params.id) });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    console.error('GET /ai/resumen', e);
+    res.status(500).json({ ok: false, error: 'IA resumen falló' });
+  }
+});
+
+app.get('/ai/siguiente/:placa', async (req, res) => {
+  try {
+    const out = await aiSuggestNext({ pool, placa: req.params.placa.toUpperCase() });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    console.error('GET /ai/siguiente', e);
+    res.status(500).json({ ok: false, error: 'IA sugerir falló' });
+  }
+});
+
+app.get('/ai/plan/:unidadId', async (req, res) => {
+  try {
+    const out = await aiPreventivePlan({ pool, unidadId: Number(req.params.unidadId) });
+    res.json({ ok: true, ...out });
+  } catch (e) {
+    console.error('GET /ai/plan', e);
+    res.status(500).json({ ok: false, error: 'IA plan falló' });
+  }
+});
+
+// ========= Debug útil =========
+app.get('/debug/env', (req, res) => {
+  res.json({
+    NODE_ENV: process.env.NODE_ENV,
+    OPENAI_MODEL: process.env.OPENAI_MODEL,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY ? '(set)' : '(missing)'
+  });
+});
+
+app.get('/debug/dbping', async (req, res) => {
+  try {
+    const [[r]] = await pool.query('SELECT 1 AS ok');
+    res.json({ ok: r?.ok === 1 });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e?.message || String(e) });
+  }
+});
+
+// ========= Arranque =========
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`✅ Servidor escuchando en http://0.0.0.0:${PORT}`);
+app.listen(PORT, () => {
+  console.log(`✅ Servidor en http://localhost:${PORT}`);
 });
