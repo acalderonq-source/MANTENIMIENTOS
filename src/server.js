@@ -673,9 +673,11 @@ const PORT = process.env.PORT || 3000;
     console.error('[DB] Ping FAILED:', e.message);
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`✅ Servidor escuchando en http://0.0.0.0:${PORT}`);
-  });
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, '0.0.0.0', () =>
+  console.log(`✅ Servidor escuchando en http://0.0.0.0:${PORT}`)
+);
+
 
   // Inicia cron de recordatorios
   startCron();
