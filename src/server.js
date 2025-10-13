@@ -10,6 +10,8 @@ import dayjs from 'dayjs';
 import ExcelJS from 'exceljs';
 import fs from 'fs';
 import fsp from 'fs/promises';
+import nodemailer from 'nodemailer';
+import cron from 'node-cron';
 import { pool } from './db.js';
 
 dotenv.config();
@@ -40,44 +42,64 @@ app.use((req, res, next) => {
     req.session.user = { id: 1, username: 'admin', rol: 'ADMIN' };
   }
   res.locals.user = req.session.user;
-  res.locals.dayjs = dayjs; // disponible en EJS
+  res.locals.dayjs = dayjs;
+  res.locals.flash = req.session.flash || null;
+  req.session.flash = null;
   next();
 });
 
+// ---------- Mailer ----------
+const transporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT || 587),
+  secure: String(process.env.SMTP_SECURE || 'false') === 'true', // true = 465
+  auth: (process.env.SMTP_USER || process.env.SMTP_PASS) ? {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  } : undefined
+});
+const MAIL_FROM = process.env.SMTP_FROM || 'notificaciones@example.com';
+const MAIL_REPLY_TO = process.env.SMTP_REPLY_TO || MAIL_FROM;
+
+async function sendMail({ to, subject, html }) {
+  if (!to) throw new Error('Sin destinatario');
+  await transporter.sendMail({ from: MAIL_FROM, to, replyTo: MAIL_REPLY_TO, subject, html });
+}
+
 // ---------- Helpers calendario ----------
-function esDomingo(iso) { return dayjs(iso).day() === 0; } // 0 = domingo
+function esDomingo(iso) { return dayjs(iso).day() === 0; }
 function siguienteNoDomingo(iso) {
   let d = dayjs(iso);
   while (d.day() === 0) d = d.add(1, 'day');
   return d.format('YYYY-MM-DD');
 }
 async function fechaSinChoque(fechaBase, excluirPlaca = null) {
-  // Evitar dos placas el mismo día: si ya hay un mantenimiento abierto ese día, empuja 1 día (saltando domingos)
   let d = dayjs(fechaBase);
-  while (true) {
+  for (let i = 0; i < 365; i++) {
+    if (d.day() === 0) { d = d.add(1, 'day'); continue; }
     const fecha = d.format('YYYY-MM-DD');
     const [rows] = await pool.query(
       `SELECT u.placa
          FROM mantenimientos m
          JOIN unidades u ON u.id=m.unidad_id
         WHERE m.fecha_fin IS NULL
-          AND m.fecha_inicio = ?`,
+          AND DATE(m.fecha_inicio) = DATE(?)`,
       [fecha]
     );
-    const hayChoque = Array.isArray(rows) && rows.some(r => r.placa !== excluirPlaca);
+    const hayChoque = rows.length > 0 && rows.some(r => r.placa !== excluirPlaca);
     if (!hayChoque) return fecha;
     d = d.add(1, 'day');
-    if (d.day() === 0) d = d.add(1, 'day');
   }
+  throw new Error('No se encontró fecha disponible');
 }
 
-// Próximo sugerido para una unidad (45 días desde último evento -> evitando domingos/choques)
+// Próximo sugerido para una unidad (45 días desde último evento)
 async function calcularProximoParaUnidad(unidadId) {
   const [hist] = await pool.query(
     `SELECT fecha_fin, fecha_inicio
        FROM mantenimientos
       WHERE unidad_id=?
-      ORDER BY id DESC
+      ORDER BY COALESCE(fecha_fin, fecha_inicio) DESC, id DESC
       LIMIT 1`, [unidadId]
   );
   const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
@@ -94,7 +116,7 @@ async function programarPreventivo(unidadId, creadoPorUserId) {
   await pool.query(
     `INSERT INTO mantenimientos
        (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
-     VALUES (?,?,?,?,?,?,1,?)`,
+     VALUES (?,?,?,?,?,?,0,?)`,
     [unidadId, u?.cedis_id || null, 'PREVENTIVO', 'Plan preventivo sugerido', prox, null, creadoPorUserId || null]
   );
   return prox;
@@ -124,7 +146,6 @@ app.get('/', async (req, res) => {
 // ========== Unidades (con filtro CEDIS + proximos) ==========
 app.get('/unidades', async (req, res) => {
   const { cedis: cedisNombre, cedis_id } = req.query;
-
   const [cedisLista] = await pool.query(`SELECT id, nombre FROM cedis ORDER BY nombre`);
 
   let where = '';
@@ -141,11 +162,11 @@ app.get('/unidades', async (req, res) => {
     params
   );
 
+  const proximosArr = await Promise.all(
+    unidades.map(u => calcularProximoParaUnidad(u.id).catch(() => null))
+  );
   const proximos = {};
-  for (const u of unidades) {
-    try { proximos[u.id] = await calcularProximoParaUnidad(u.id); }
-    catch { proximos[u.id] = null; }
-  }
+  unidades.forEach((u, i) => { proximos[u.id] = proximosArr[i]; });
 
   res.render('unidades', {
     title: 'Unidades',
@@ -168,18 +189,30 @@ app.post('/unidades', async (req, res) => {
   await pool.query(
     `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
      VALUES (?,?,?,?,?)`,
-    [placa.toUpperCase(), (tipo || 'CAMION').toUpperCase(), cedis_id, 0, 'ACTIVA']
+    [String(placa || '').toUpperCase(), (tipo || 'CAMION').toUpperCase(), cedis_id, 0, 'ACTIVA']
   );
   res.redirect('/unidades');
 });
 
-// Programar uno (ruta clásica)
+// Programar uno (verifica correo del CEDIS)
 app.post('/unidades/:id/programar', async (req, res) => {
-  await programarPreventivo(Number(req.params.id), req.session.user?.id);
+  const unidadId = Number(req.params.id);
+  const [[u]] = await pool.query(`
+    SELECT u.id, u.cedis_id, c.email, c.nombre AS cedis_nombre
+    FROM unidades u
+    LEFT JOIN cedis c ON c.id=u.cedis_id
+    WHERE u.id=? LIMIT 1`, [unidadId]);
+
+  if (!u) return res.status(404).send('Unidad no existe');
+  if (!u.email) {
+    req.session.flash = { error: `Falta correo del CEDIS ${u.cedis_nombre}. Cárgalo en /cedis.` };
+    return res.redirect('/cedis');
+  }
+  await programarPreventivo(unidadId, req.session.user?.id);
   res.redirect('/mantenimientos');
 });
 
-// Endpoint que usa la UI para programar uno o todos
+// Endpoint AI programar (uno o todos) con validación de correos
 app.post('/ai/programar', async (req, res) => {
   try {
     const creadoPor = req.session.user?.id || null;
@@ -187,8 +220,27 @@ app.post('/ai/programar', async (req, res) => {
 
     if (body.unidad_id) {
       const unidadId = Number(body.unidad_id);
+      const [[u]] = await pool.query(`
+        SELECT u.id, u.cedis_id, c.email, c.nombre AS cedis_nombre
+        FROM unidades u LEFT JOIN cedis c ON c.id=u.cedis_id WHERE u.id=? LIMIT 1`, [unidadId]);
+      if (!u?.email) {
+        return res.status(400).json({ ok:false, error:`Falta correo del CEDIS ${u?.cedis_nombre || ''}. Cárgalo en /cedis` });
+      }
       const prox = await programarPreventivo(unidadId, creadoPor);
       return res.json({ ok: true, count: 1, unidad_id: unidadId, fecha: prox });
+    }
+
+    const [missing] = await pool.query(`
+      SELECT DISTINCT c.nombre
+      FROM unidades u
+      JOIN cedis c ON c.id=u.cedis_id
+      WHERE u.estado='ACTIVA' AND (c.email IS NULL OR c.email='')
+    `);
+    if (missing.length) {
+      return res.status(400).json({
+        ok:false,
+        error:`Faltan correos para CEDIS: ${missing.map(m=>m.nombre).join(', ')}. Cárgalos en /cedis`
+      });
     }
 
     const [unidadesActivas] = await pool.query(`SELECT id FROM unidades WHERE estado='ACTIVA' ORDER BY placa`);
@@ -197,24 +249,30 @@ app.post('/ai/programar', async (req, res) => {
 
     for (const u of unidadesActivas) {
       const [hist] = await pool.query(
-        `SELECT fecha_fin, fecha_inicio FROM mantenimientos WHERE unidad_id=? ORDER BY id DESC LIMIT 1`, [u.id]
+        `SELECT fecha_fin, fecha_inicio
+           FROM mantenimientos
+          WHERE unidad_id=?
+          ORDER BY COALESCE(fecha_fin, fecha_inicio) DESC, id DESC
+          LIMIT 1`, [u.id]
       );
       const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
-      let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
-      let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
-      if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
-      candidata = await fechaSinChoque(candidata);
+      const base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
 
-      let d = dayjs(candidata);
+      let candidata = dayjs(base).add(45, 'day');
+      if (candidata.day() === 0) candidata = candidata.add(1, 'day');
+
+      let finalDate = await fechaSinChoque(candidata.format('YYYY-MM-DD'));
+
+      let d = dayjs(finalDate);
       while (fechasAsignadasEnBatch.has(d.format('YYYY-MM-DD')) || d.day() === 0) d = d.add(1, 'day');
-      const finalDate = d.format('YYYY-MM-DD');
+      finalDate = d.format('YYYY-MM-DD');
       fechasAsignadasEnBatch.add(finalDate);
 
       const [[ur]] = await pool.query(`SELECT id, cedis_id FROM unidades WHERE id=?`, [u.id]);
       await pool.query(
         `INSERT INTO mantenimientos
            (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
-         VALUES (?,?,?,?,?,?,1,?)`,
+         VALUES (?,?,?,?,?,?,0,?)`,
         [u.id, ur?.cedis_id || null, 'PREVENTIVO', 'Plan preventivo sugerido', finalDate, null, creadoPor]
       );
       count++;
@@ -225,6 +283,19 @@ app.post('/ai/programar', async (req, res) => {
     console.error('POST /ai/programar error', e);
     res.status(500).json({ ok: false, error: 'No se pudo programar por IA.' });
   }
+});
+
+// ---- Admin: emails por CEDIS ----
+app.get('/cedis', async (_req, res) => {
+  const [rows] = await pool.query(`SELECT id, nombre, COALESCE(email,'') AS email FROM cedis ORDER BY nombre`);
+  res.render('cedis_emails', { title: 'Correos por CEDIS', items: rows });
+});
+app.post('/cedis/:id/email', async (req, res) => {
+  const id = Number(req.params.id);
+  const email = (req.body?.email || '').trim() || null;
+  await pool.query(`UPDATE cedis SET email=? WHERE id=?`, [email, id]);
+  req.session.flash = { ok: 'Correo guardado.' };
+  res.redirect('/cedis');
 });
 
 // Mantenimientos abiertos
@@ -255,7 +326,7 @@ app.get('/historial', async (req, res) => {
 
 // Historial por placa
 app.get('/historial/:placa', async (req, res) => {
-  const placa = req.params.placa.toUpperCase();
+  const placa = String(req.params.placa || '').toUpperCase();
   const [[u]] = await pool.query(`SELECT id, placa FROM unidades WHERE placa=? LIMIT 1`, [placa]);
   if (!u) return res.status(404).send('Placa no encontrada');
   const [rows] = await pool.query(`
@@ -271,7 +342,7 @@ app.get('/historial/:placa', async (req, res) => {
 app.get('/export/programados.xlsx', async (req, res) => {
   try {
     const { cedis: cedisNombre, cedis_id } = req.query;
-    let where = `WHERE m.fecha_fin IS NULL AND m.fecha_inicio >= CURDATE()`;
+    let where = `WHERE m.fecha_fin IS NULL AND DATE(m.fecha_inicio) >= CURDATE()`;
     const params = [];
     if (cedis_id) { where += ` AND m.cedis_id = ?`; params.push(Number(cedis_id)); }
     else if (cedisNombre) { where += ` AND c.nombre = ?`; params.push(cedisNombre); }
@@ -313,7 +384,7 @@ app.get('/export/programados.xlsx', async (req, res) => {
     for (const r of rows) {
       ws.addRow([
         r.id, r.placa, r.cedis || 'N/D', r.tipo || 'N/D', r.motivo || 'N/D',
-        dayjs(r.fecha_inicio).format('YYYY-MM-DD'),
+        (r.fecha_inicio && dayjs(r.fecha_inicio).isValid()) ? dayjs(r.fecha_inicio).format('YYYY-MM-DD') : '',
         r.km_al_entrar ?? '', r.reservado_inventario ? 'Sí' : 'No'
       ]);
     }
@@ -345,7 +416,7 @@ app.get('/export/programados.xlsx', async (req, res) => {
   }
 });
 
-// ============ SEED: Cargar desde /data/*.json (tus archivos) =============
+// ============ Normalizadores / helpers de seed =================
 function normCedisName(x) {
   if (!x) return null;
   const t = String(x).trim();
@@ -355,8 +426,8 @@ function normCedisName(x) {
 }
 function normPlaca(rawId, rawPlaca) {
   let p = (rawPlaca || rawId || '').toString().trim().toUpperCase();
-  p = p.replace(/\s+/g, '').replace(/^([A-Z]+)-(\d+)$/, '$1$2'); // C-172464 -> C172464
-  if (/^\d+$/.test(p)) p = 'C' + p; // 170751 -> C170751
+  p = p.replace(/\s+/g, '').replace(/^([A-Z]+)-(\d+)$/, '$1$2');
+  if (/^\d+$/.test(p)) p = 'C' + p;
   return p;
 }
 function inferTipo({ tipo, negocio, segmento }) {
@@ -381,14 +452,6 @@ async function ensureCedis(nombre) {
   const [[row]] = await pool.query(`SELECT id FROM cedis WHERE nombre=? LIMIT 1`, [n]);
   return row?.id || null;
 }
-async function readJsonArray(absPath) {
-  if (!fs.existsSync(absPath)) return [];
-  const buf = await fsp.readFile(absPath, 'utf8');
-  try {
-    const data = JSON.parse(buf);
-    return Array.isArray(data) ? data : [];
-  } catch { return []; }
-}
 function mapRawToUniform(raw) {
   const placa = normPlaca(raw.id, raw.placa);
   const cedis = raw.cedis ?? raw.CEDIS ?? null;
@@ -396,24 +459,30 @@ function mapRawToUniform(raw) {
   return { placa, cedis, tipo };
 }
 
-// Carga todos los archivos JSON de /data especificados:
+// ============ SEED: Cargar TODOS los .json de /data ======================
 app.get('/seed/cargar-archivos', async (req, res) => {
   try {
-    const DATA_DIR = path.join(process.cwd(), 'data');
-    const files = [
-      'unidades-tecnicos.json',
-      'unidades-alajuela.json',
-      'unidades-granel-cartago.json',
-      'unidades-hinos-cartago.json',
-      'unidades-la-cruz.json',
-      'unidades-transportadora.json',
-      'unidades-todo.json' // opcional
-    ];
+    const DATA_DIR = path.resolve(__dirname, '../data');
+    console.log('[seed] DATA_DIR =', DATA_DIR);
+
+    if (!fs.existsSync(DATA_DIR)) {
+      return res.status(400).json({ ok:false, error:`No existe ${DATA_DIR}` });
+    }
+
+    const names = await fsp.readdir(DATA_DIR);
+    const jsonFiles = names.filter(n => n.toLowerCase().endsWith('.json'));
+    console.log('[seed] JSON files encontrados:', jsonFiles);
 
     const all = [];
-    for (const fname of files) {
-      const arr = await readJsonArray(path.join(DATA_DIR, fname));
-      if (arr.length) all.push(...arr);
+    for (const fname of jsonFiles) {
+      try {
+        const full = path.join(DATA_DIR, fname);
+        const buf = await fsp.readFile(full, 'utf8');
+        const arr = JSON.parse(buf);
+        if (Array.isArray(arr) && arr.length) all.push(...arr);
+      } catch (e) {
+        console.warn(`[seed] No se pudo leer ${fname}:`, e.message);
+      }
     }
 
     let insertados = 0, existentes = 0, errores = 0;
@@ -439,15 +508,139 @@ app.get('/seed/cargar-archivos', async (req, res) => {
       }
     }
 
-    res.json({ ok:true, total: all.length, insertados, existentes, errores, detalles });
+    res.json({ ok:true, totalLeidos: all.length, insertados, existentes, errores, detallesMuestra: detalles.slice(0,10), archivos: jsonFiles });
   } catch (e) {
     console.error('seed/cargar-archivos error', e);
     res.status(500).json({ ok:false, error:'Fallo al cargar desde archivos.' });
   }
 });
 
+// Seed directo pegando el arreglo en el body (JSON)
+app.post('/seed/pegar', async (req, res) => {
+  try {
+    const arr = req.body;
+    if (!Array.isArray(arr)) {
+      return res.status(400).json({ ok:false, error:'Manda un arreglo JSON en el body' });
+    }
+
+    let insertados = 0, existentes = 0, errores = 0;
+    const detalles = [];
+
+    for (const raw of arr) {
+      try {
+        const u = mapRawToUniform(raw);
+        if (!u.placa) { errores++; detalles.push({ placa:null, error:'Sin placa/id' }); continue; }
+
+        const [ex] = await pool.query(`SELECT id FROM unidades WHERE placa=? LIMIT 1`, [u.placa]);
+        if (Array.isArray(ex) && ex.length) { existentes++; continue; }
+
+        const cedis_id = await ensureCedis(u.cedis);
+        await pool.query(
+          `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
+           VALUES (?,?,?,?,?)`,
+          [u.placa, u.tipo, cedis_id, 0, 'ACTIVA']
+        );
+        insertados++;
+      } catch (e) {
+        errores++; detalles.push({ placa: raw?.placa || raw?.id || null, error: e.message });
+      }
+    }
+
+    res.json({ ok:true, insertados, existentes, errores, detallesMuestra: detalles.slice(0,10) });
+  } catch (e) {
+    console.error('POST /seed/pegar error', e);
+    res.status(500).json({ ok:false, error:'Fallo seed pegado.' });
+  }
+});
+
+// Debug: ver qué hay realmente en la DB
+app.get('/debug/unidades', async (_req, res) => {
+  const [[c]] = await pool.query(`SELECT COUNT(*) AS total FROM unidades`);
+  const [rows] = await pool.query(`SELECT id, placa, tipo, cedis_id, estado FROM unidades ORDER BY id DESC LIMIT 50`);
+  res.json({ total: c.total, muestra: rows });
+});
+app.get('/debug/cedis', async (_req, res) => {
+  const [rows] = await pool.query(`SELECT id, nombre, email FROM cedis ORDER BY nombre`);
+  res.json({ cedis: rows });
+});
+
+// ---------- Recordatorios 3 días antes ----------
+function mailTemplate({ cedis, fecha, placas }) {
+  const list = placas.map(p => `<li><strong>${p}</strong></li>`).join('');
+  return `
+    <div style="font-family:system-ui,Segoe UI,Arial,sans-serif;line-height:1.45">
+      <h2>Recordatorio de Mantenimiento Preventivo</h2>
+      <p><b>CEDIS:</b> ${cedis}</p>
+      <p><b>Fecha programada:</b> ${fecha}</p>
+      <p><b>Unidades:</b></p>
+      <ul>${list}</ul>
+      <p style="color:#555">Este correo se genera automáticamente 3 días antes de la fecha programada.</p>
+    </div>`;
+}
+
+async function sendRemindersForDate(targetISO) {
+  const [rows] = await pool.query(`
+    SELECT DATE(m.fecha_inicio) AS fecha, u.placa, c.nombre AS cedis, c.email
+    FROM mantenimientos m
+    JOIN unidades u ON u.id = m.unidad_id
+    LEFT JOIN cedis c ON c.id = m.cedis_id
+    WHERE m.fecha_fin IS NULL
+      AND DATE(m.fecha_inicio) = ?
+      AND c.email IS NOT NULL AND c.email <> ''
+    ORDER BY c.nombre, u.placa
+  `, [targetISO]);
+
+  if (!rows.length) return { sent: 0 };
+
+  const groups = new Map();
+  for (const r of rows) {
+    const key = `${r.cedis}||${r.fecha}||${r.email}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(r.placa);
+  }
+
+  let sent = 0;
+  for (const [key, placas] of groups.entries()) {
+    const [cedis, fecha, email] = key.split('||');
+    const html = mailTemplate({ cedis, fecha, placas });
+    await sendMail({
+      to: email,
+      subject: `Recordatorio: mantenimiento ${fecha} — ${cedis}`,
+      html
+    });
+    sent++;
+  }
+  return { sent };
+}
+
+// CRON diario 08:00 (TZ configurable)
+cron.schedule('0 8 * * *', async () => {
+  try {
+    const target = dayjs().add(3, 'day').format('YYYY-MM-DD');
+    const res = await sendRemindersForDate(target);
+    console.log(`[CRON] Reminders for ${target}:`, res);
+  } catch (e) {
+    console.error('[CRON] reminder error', e);
+  }
+}, { timezone: process.env.TZ || 'UTC' });
+
+// Endpoint manual de prueba
+app.get('/debug/remind', async (req, res) => {
+  const d = (req.query.date || dayjs().add(3, 'day').format('YYYY-MM-DD'));
+  try {
+    const out = await sendRemindersForDate(d);
+    res.json({ ok:true, date:d, ...out });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:e.message });
+  }
+});
+
 // ---------- Arranque ----------
 const PORT = process.env.PORT || 3000;
+(async () => {
+  try { await pool.query('SELECT 1'); console.log('[DB] Ping OK'); }
+  catch (e) { console.error('[DB] Ping FAILED:', e.message); }
+})();
 app.listen(PORT, () => {
   console.log(`✅ Servidor en http://localhost:${PORT}`);
 });

@@ -19,6 +19,8 @@
     "express-session": "^1.17.3",
     "method-override": "^3.0.0",
     "mysql2": "^3.15.2",
+    "node-cron": "^4.2.1",
+    "nodemailer": "^7.0.9",
     "openai": "^6.2.0",
     "uuid": "^9.0.1"
   }

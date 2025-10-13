@@ -1,0 +1,19 @@
+<%- include('partials/header', { title }) %>
+<h2>Correos por CEDIS</h2>
+<form method="post" action="/cedis/bulk">
+<table class="table">
+  <tr><th>CEDIS</th><th>Email</th><th>Guardar</th></tr>
+  <% items.forEach(i => { %>
+    <tr>
+      <td><%= i.nombre %></td>
+      <td>
+        <form method="post" action="/cedis/<%= i.id %>/email">
+          <input name="email" value="<%= i.email %>" style="min-width:260px" />
+          <button class="btn btn-primary" type="submit">Guardar</button>
+        </form>
+      </td>
+      <td></td>
+    </tr>
+  <% }) %>
+</table>
+<%- include('partials/footer') %>
