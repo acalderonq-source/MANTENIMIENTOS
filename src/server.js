@@ -36,6 +36,22 @@ app.use(session({
   saveUninitialized: false
 }));
 
+// Salud simple (no toca DB) → evita 502
+app.get('/healthz', (_req, res) => res.type('text/plain').send('ok'));
+
+// Ver variables clave (no secretos)
+app.get('/debug/env', (_req, res) => {
+  res.json({
+    NODE_ENV: process.env.NODE_ENV,
+    DB_HOST: process.env.DB_HOST,
+    DB_PORT: process.env.DB_PORT,
+    DB_USER: process.env.DB_USER,
+    DB_NAME: process.env.DB_NAME,
+    DB_SSL: process.env.DB_SSL,
+    TZ: process.env.TZ
+  });
+});
+
 // Simular auth básica
 app.use((req, res, next) => {
   if (!req.session.user) {
@@ -66,7 +82,6 @@ function siguienteNoDomingo(iso) {
   return d.format('YYYY-MM-DD');
 }
 async function fechaSinChoque(fechaBase, excluirPlaca = null) {
-  // Evitar dos placas el mismo día: si ya hay un mantenimiento abierto ese día, empuja 1 día (saltando domingos)
   let d = dayjs(fechaBase);
   while (true) {
     const fecha = d.format('YYYY-MM-DD');
@@ -162,7 +177,7 @@ Fecha programada: ${fechaNice}`;
 
 // ---------- CRON: enviar recordatorios 3 días antes ----------
 function startCron() {
-  // Corre a las 08:00 todos los días. Respeta TZ si la variable de entorno TZ está definida en el hosting.
+  // Corre a las 08:00 todos los días (TZ configurable con env TZ)
   cron.schedule('0 8 * * *', async () => {
     try {
       const [rows] = await pool.query(`
@@ -188,7 +203,6 @@ function startCron() {
             placa: r.placa,
             fecha: r.fecha_inicio
           });
-          // Opcional: marcar que ya se notificó (añadir columna si quieres evitar reenvíos).
         } catch (e) {
           console.error('[MAIL] Error enviando a', r.email, e.message);
         }
@@ -200,25 +214,41 @@ function startCron() {
   }, { timezone: process.env.TZ || 'UTC' });
 }
 
-// ---------- Home ----------
+// ---------- Home (con fallback si DB falla) ----------
 app.get('/', async (req, res) => {
-  const [[kpis]] = await pool.query(`
-    SELECT
-      (SELECT COUNT(*) FROM unidades) AS unidades,
-      (SELECT COUNT(*) FROM mantenimientos WHERE fecha_fin IS NULL) AS en_taller,
-      (SELECT COUNT(*) FROM mantenimientos WHERE DATE(fecha_inicio)=CURDATE()) AS hoy
-  `);
+  try {
+    const [[kpis]] = await pool.query(`
+      SELECT
+        (SELECT COUNT(*) FROM unidades) AS unidades,
+        (SELECT COUNT(*) FROM mantenimientos WHERE fecha_fin IS NULL) AS en_taller,
+        (SELECT COUNT(*) FROM mantenimientos WHERE DATE(fecha_inicio)=CURDATE()) AS hoy
+    `);
 
-  const [mants] = await pool.query(`
-    SELECT m.id, u.placa, c.nombre AS cedis, m.tipo, m.fecha_inicio, m.fecha_fin, m.duracion_dias
-      FROM mantenimientos m
-      JOIN unidades u ON u.id=m.unidad_id
-      LEFT JOIN cedis c ON c.id=m.cedis_id
-     ORDER BY m.id DESC
-     LIMIT 10
-  `);
+    const [mants] = await pool.query(`
+      SELECT m.id, u.placa, c.nombre AS cedis, m.tipo, m.fecha_inicio, m.fecha_fin, m.duracion_dias
+        FROM mantenimientos m
+        JOIN unidades u ON u.id=m.unidad_id
+        LEFT JOIN cedis c ON c.id=m.cedis_id
+       ORDER BY m.id DESC
+       LIMIT 10
+    `);
 
-  res.render('dashboard', { title: 'Dashboard', kpis, mants });
+    res.render('dashboard', { title: 'Dashboard', kpis, mants });
+  } catch (e) {
+    console.error('GET / fallback por error DB:', e.message);
+    res.status(200).send(`
+      <html><body style="font-family:system-ui">
+        <h1>⚠️ Servicio arriba, pero DB no responde</h1>
+        <p>La aplicación está corriendo, pero hubo un problema consultando la base de datos.</p>
+        <pre>${e.message}</pre>
+        <ul>
+          <li><a href="/debug/env">/debug/env</a> — variables DB que está leyendo</li>
+          <li><a href="/debug/dbping">/debug/dbping</a> — ping directo a la DB</li>
+          <li><a href="/healthz">/healthz</a> — health simple</li>
+        </ul>
+      </body></html>
+    `);
+  }
 });
 
 // ========== Unidades (con filtro CEDIS + proximos) ==========
@@ -487,7 +517,7 @@ app.get('/export/programados.xlsx', async (req, res) => {
   }
 });
 
-// ============ Seed desde /data/*.json opcional =================
+// ============ Seed: POST /seed/pegar (arreglo JSON) ===========
 function normCedisName(x) {
   if (!x) return null;
   const t = String(x).trim();
@@ -520,14 +550,6 @@ async function ensureCedis(nombre) {
   await pool.query(`INSERT IGNORE INTO cedis (nombre) VALUES (?)`, [n]);
   const [[row]] = await pool.query(`SELECT id FROM cedis WHERE nombre=? LIMIT 1`, [n]);
   return row?.id || null;
-}
-async function readJsonArray(absPath) {
-  if (!fs.existsSync(absPath)) return [];
-  const buf = await fsp.readFile(absPath, 'utf8');
-  try {
-    const data = JSON.parse(buf);
-    return Array.isArray(data) ? data : [];
-  } catch { return []; }
 }
 function mapRawToUniform(raw) {
   const placa = normPlaca(raw.id, raw.placa);
@@ -583,14 +605,22 @@ app.get('/debug/dbping', async (_req, res) => {
   catch (e) { res.status(500).json({ ok:false, error:e.message }); }
 });
 app.get('/debug/unidades', async (_req, res) => {
-  const [rows] = await pool.query(`SELECT id, placa, tipo, cedis_id, estado FROM unidades ORDER BY id DESC LIMIT 25`);
-  res.json({ total: rows.length, muestra: rows });
+  try {
+    const [rows] = await pool.query(`SELECT id, placa, tipo, cedis_id, estado FROM unidades ORDER BY id DESC LIMIT 25`);
+    res.json({ total: rows.length, muestra: rows });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:e.message });
+  }
 });
 app.get('/debug/cedis', async (_req, res) => {
-  const [rows] = await pool.query(`SELECT id, nombre, COALESCE(email,'') AS email FROM cedis ORDER BY nombre`);
-  res.json({ cedis: rows });
+  try {
+    const [rows] = await pool.query(`SELECT id, nombre, COALESCE(email,'') AS email FROM cedis ORDER BY nombre`);
+    res.json({ cedis: rows });
+  } catch (e) {
+    res.status(500).json({ ok:false, error:e.message });
+  }
 });
-app.get('/debug/ai-preview', async (req, res) => {
+app.get('/debug/ai-preview', async (_req, res) => {
   try {
     const [missing] = await pool.query(`
       SELECT DISTINCT c.nombre
@@ -652,18 +682,12 @@ const PORT = process.env.PORT || 3000;
 
 (async () => {
   try {
-    console.log('[DB] Conectando a MySQL:', {
+    console.log('[DB] Detalle conexión:', {
       host: pool.config.connectionConfig.host,
       port: pool.config.connectionConfig.port,
       user: pool.config.connectionConfig.user,
       database: pool.config.connectionConfig.database,
-      ssl: !!pool.config.connectionConfig.ssl,
-      dateStrings: true,
-      namedPlaceholders: false,
-      timezone: 'Z',
-      onRailway: !!process.env.RAILWAY_ENVIRONMENT_NAME,
-      onRender: !!process.env.RENDER,
-      isRailwayInternal: /\.railway\.internal$/i.test(pool.config.connectionConfig.host || '')
+      ssl: !!pool.config.connectionConfig.ssl
     });
     // Ping + asegurar columna email
     await pool.query('SELECT 1');
@@ -673,11 +697,9 @@ const PORT = process.env.PORT || 3000;
     console.error('[DB] Ping FAILED:', e.message);
   }
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, '0.0.0.0', () =>
-  console.log(`✅ Servidor escuchando en http://0.0.0.0:${PORT}`)
-);
-
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`✅ Servidor escuchando en http://0.0.0.0:${PORT}`);
+  });
 
   // Inicia cron de recordatorios
   startCron();
