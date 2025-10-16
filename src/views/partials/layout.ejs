@@ -1,24 +1,28 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="es">
 <head>
-  <meta charset="utf-8" />
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
   <title><%= title || 'Mantenimientos' %></title>
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="/css/styles.css" />
+  <link rel="stylesheet" href="/css/styles.css"/>
 </head>
-<body>
+<body class="app">
   <header class="topbar">
-    <div class="brand">Flota • Mantenimientos</div>
-    <nav>
+    <div class="brand">Gas Tomza · Mantenimientos</div>
+    <nav class="menu">
       <a href="/">Dashboard</a>
       <a href="/unidades">Unidades</a>
       <a href="/mantenimientos">Mantenimientos</a>
-      <a href="/historial">Historial</a>
+      <a href="/logout">Salir</a>
     </nav>
   </header>
 
   <main class="container">
     <%- body %>
   </main>
+
+  <footer class="footer">
+    © <%= new Date().getFullYear() %> · Sistema de Mantenimientos
+  </footer>
 </body>
 </html>
