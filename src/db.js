@@ -1,33 +1,37 @@
 // src/db.js
-import mysql from 'mysql2/promise';
+import mysql from 'mysql2';
+import dotenv from 'dotenv';
+dotenv.config();
 
-const cfg = {
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: Number(process.env.DB_PORT || 3306),
-  user: process.env.DB_USER || 'root',
-  password: process.env.DB_PASSWORD || '',
-  database: process.env.DB_NAME || 'flota',
-  sslEnabled: String(process.env.DB_SSL || '').toLowerCase() === 'true',
-  connLimit: Number(process.env.DB_CONN_LIMIT || 10),
-  dateStrings: String(process.env.DB_DATE_STRINGS || '').toLowerCase() === 'true',
-};
+function bool(v, def=false) {
+  if (v == null) return def;
+  const s = String(v).trim().toLowerCase();
+  return s === '1' || s === 'true' || s === 'yes';
+}
 
-const pool = mysql.createPool({
-  host: cfg.host,
-  port: cfg.port,
-  user: cfg.user,
-  password: cfg.password,
-  database: cfg.database,
+// Toma DB_* y si faltan usa MYSQL*; default a 'railway'
+const host = process.env.DB_HOST || process.env.MYSQLHOST || '127.0.0.1';
+const port = Number(process.env.DB_PORT || process.env.MYSQLPORT || 3306);
+const user = process.env.DB_USER || process.env.MYSQLUSER || 'root';
+const password = process.env.DB_PASSWORD || process.env.MYSQLPASSWORD || '';
+const database = process.env.DB_NAME || process.env.MYSQLDATABASE || 'railway';
+const sslEnabled = bool(process.env.DB_SSL, false);
+
+// (Muy importante) Ignora DATABASE_URL para evitar que pise la config
+// Si quisieras soportarlo, tendrías que parsearlo y solo usarlo si no hay DB_*
+
+export const pool = mysql.createPool({
+  host,
+  port,
+  user,
+  password,
+  database,
   waitForConnections: true,
-  connectionLimit: cfg.connLimit,
-  queueLimit: 0,
-  ssl: cfg.sslEnabled ? { rejectUnauthorized: false } : undefined,
-  connectTimeout: 20000,
-  enableKeepAlive: true,
-  keepAliveInitialDelay: 10000,
-  dateStrings: cfg.dateStrings,
-});
+  connectionLimit: 10,
+  dateStrings: bool(process.env.DB_DATE_STRINGS, true),
+  namedPlaceholders: bool(process.env.DB_NAMED_PLACEHOLDERS, false),
+  timezone: process.env.DB_TIMEZONE || 'Z',
+  ssl: sslEnabled ? { minVersion: 'TLSv1.2', rejectUnauthorized: true } : undefined,
+}).promise();
 
-console.log(`[DB] MySQL pool listo -> ${cfg.host}:${cfg.port} / ${cfg.database} (ssl=${cfg.sslEnabled})`);
-
-export { pool, cfg };
+export const cfg = { host, port, database, sslEnabled };
