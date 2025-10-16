@@ -1,30 +1,34 @@
 // src/db.js
 import mysql from 'mysql2/promise';
 
-const {
-  DB_HOST,
-  DB_PORT = 3306,
-  DB_USER,
-  DB_PASSWORD,
-  DB_NAME,
-  DB_CONN_LIMIT = 10,
-} = process.env;
+const cfg = {
+  host: process.env.DB_HOST || '127.0.0.1',
+  port: Number(process.env.DB_PORT || 3306),
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'flota',
+  sslEnabled: String(process.env.DB_SSL || '').toLowerCase() === 'true',
+  connLimit: Number(process.env.DB_CONN_LIMIT || 10),
+  dateStrings: String(process.env.DB_DATE_STRINGS || '').toLowerCase() === 'true',
+};
 
-if (!DB_HOST || !DB_USER || !DB_NAME) {
-  console.warn('[DB] Faltan variables de entorno (DB_HOST/DB_USER/DB_NAME). Revisa .env');
-}
-
-export const pool = mysql.createPool({
-  host: DB_HOST,
-  port: Number(DB_PORT),
-  user: DB_USER,
-  password: DB_PASSWORD,
-  database: DB_NAME,
+const pool = mysql.createPool({
+  host: cfg.host,
+  port: cfg.port,
+  user: cfg.user,
+  password: cfg.password,
+  database: cfg.database,
   waitForConnections: true,
-  connectionLimit: Number(DB_CONN_LIMIT),
+  connectionLimit: cfg.connLimit,
   queueLimit: 0,
-  // Descomenta si tu proveedor requiere SSL
-  // ssl: { rejectUnauthorized: false }
+  ssl: cfg.sslEnabled ? { rejectUnauthorized: false } : undefined,
+  connectTimeout: 20000,
+  enableKeepAlive: true,
+  keepAliveInitialDelay: 10000,
+  dateStrings: cfg.dateStrings,
 });
 
-console.log(`[DB] MySQL pool listo -> ${DB_HOST}:${DB_PORT} / ${DB_NAME}`);
+// Log claro para verificar que **sí** usa 24607
+console.log(`[DB] MySQL pool listo -> ${cfg.host}:${cfg.port} / ${cfg.database} (ssl=${cfg.sslEnabled})`);
+
+export { pool, cfg };
