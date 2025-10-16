@@ -1,0 +1,9 @@
+{
+  "ok": true,
+  "cfg": {
+    "database": "railway",
+    "sslEnabled": true,
+    "sslRejectUnauthorized": false
+  },
+  "mysql": "8.x.x"
+}
