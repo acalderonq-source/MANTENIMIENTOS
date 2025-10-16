@@ -268,6 +268,15 @@ app.post('/mantenimientos/:id/realizado', async (req, res) => {
     res.status(500).send('No se pudo cerrar.');
   }
 });
+// ====== Middleware de errores (muestra el stack en consola y un mensaje útil) ======
+app.use((err, req, res, next) => {
+  console.error('🔥 Unhandled error:', err && err.stack ? err.stack : err);
+  if (res.headersSent) return next(err);
+  const msg = process.env.NODE_ENV === 'development'
+    ? (err && err.stack ? String(err.stack) : String(err))
+    : 'Internal Server Error';
+  res.status(500).send(msg);
+});
 
 // ---------- Start ----------
 const PORT = process.env.PORT || 3000;
