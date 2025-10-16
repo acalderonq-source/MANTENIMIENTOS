@@ -28,7 +28,6 @@ const pool = mysql.createPool({
   dateStrings: cfg.dateStrings,
 });
 
-// Log claro para verificar que **sí** usa 24607
 console.log(`[DB] MySQL pool listo -> ${cfg.host}:${cfg.port} / ${cfg.database} (ssl=${cfg.sslEnabled})`);
 
 export { pool, cfg };
