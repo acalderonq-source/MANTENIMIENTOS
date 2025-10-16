@@ -1,44 +1,35 @@
-<h2>Unidades</h2>
+<section class="card">
+  <h1>Unidades</h1>
+  <table>
+    <thead>
+      <tr><th>Placa</th><th>Tipo</th><th>CEDIS</th><th>Estado</th><th>Acciones</th></tr>
+    </thead>
+    <tbody>
+    <% unidades.forEach(u => { %>
+      <tr>
+        <td><a href="/historial/<%= u.placa %>"><%= u.placa %></a></td>
+        <td><%= u.tipo %></td>
+        <td><%= u.cedis_nombre || '' %></td>
+        <td><%= u.estado %></td>
+        <td>
+          <form method="post" action="/unidades/<%= u.id %>/programar" style="display:inline">
+            <button class="btn primary">Programar 1</button>
+          </form>
+        </td>
+      </tr>
+    <% }) %>
+    </tbody>
+  </table>
+</section>
 
-<form method="get" action="/unidades" class="filters">
-  <label>CEDIS:
-    <select name="cedis_id">
-      <option value="">(Todos)</option>
-      <% cedisLista.forEach(c => { %>
-        <option value="<%= c.id %>" <%= (filtroActual.cedisId == c.id ? 'selected' : '') %>><%= c.nombre %></option>
-      <% }) %>
-    </select>
-  </label>
-  <button type="submit">Filtrar</button>
-</form>
-
-<table>
-  <thead><tr><th>Placa</th><th>Tipo</th><th>CEDIS</th><th>Estado</th><th>Próximo sugerido</th><th>Acción</th></tr></thead>
-  <tbody>
-  <% if (!unidades || !unidades.length) { %>
-    <tr><td colspan="6">Sin unidades</td></tr>
-  <% } else { unidades.forEach(u => { %>
-    <tr>
-      <td><%= u.placa %></td>
-      <td><%= u.tipo %></td>
-      <td><%= u.cedis_nombre || 'N/D' %></td>
-      <td><%= u.estado %></td>
-      <td><%= proximos[u.id] || '—' %></td>
-      <td>
-        <form method="post" action="/unidades/<%= u.id %>/programar" style="display:inline">
-          <button>Programar</button>
-        </form>
-      </td>
-    </tr>
-  <% }) } %>
-  </tbody>
-</table>
-
-<hr/>
-<h3>Crear unidad</h3>
-<form method="post" action="/unidades">
-  <label>Placa <input name="placa" required></label>
-  <label>Tipo <input name="tipo" placeholder="CAMION/HINO/GRANEL"></label>
-  <label>CEDIS <input name="cedis_nombre" placeholder="Cartago, Guapiles, ..."></label>
-  <button>Crear</button>
-</form>
+<section class="card">
+  <h2>Agregar unidad</h2>
+  <form method="post" action="/unidades">
+    <div class="row">
+      <div><label>Placa</label><input name="placa" required /></div>
+      <div><label>Tipo</label><input name="tipo" placeholder="CAMION/SEMIRREMOLQUE" /></div>
+      <div><label>CEDIS</label><input name="cedis_nombre" placeholder="TRANSPORTADORA" /></div>
+    </div>
+    <button class="btn">Crear</button>
+  </form>
+</section>

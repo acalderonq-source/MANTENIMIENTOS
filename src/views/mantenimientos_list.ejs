@@ -1,17 +1,35 @@
-<h2>Mantenimientos abiertos</h2>
-<table>
-  <thead><tr><th>ID</th><th>Placa</th><th>CEDIS</th><th>Tipo</th><th>Inicio</th></tr></thead>
-  <tbody>
-  <% if (!mants || !mants.length) { %>
-    <tr><td colspan="5">Sin abiertos</td></tr>
-  <% } else { mants.forEach(m => { %>
-    <tr>
-      <td><%= m.id %></td>
-      <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
-      <td><%= m.cedis_nombre || 'N/D' %></td>
-      <td><%= m.tipo %></td>
-      <td><%= dayjs(m.fecha_inicio).format('YYYY-MM-DD') %></td>
-    </tr>
-  <% }) } %>
-  </tbody>
-</table>
+<section class="card">
+  <h1>Mantenimientos abiertos</h1>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Placa</th><th>CEDIS</th><th>Tipo</th><th>Inicio</th><th>Acciones</th></tr>
+    </thead>
+    <tbody>
+    <% mants.forEach(m => { %>
+      <tr>
+        <td><%= m.id %></td>
+        <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
+        <td><%= m.cedis_nombre || '' %></td>
+        <td><%= m.tipo %></td>
+        <td><%= m.fecha_inicio ? dayjs(m.fecha_inicio).format('DD/MM/YYYY') : '' %></td>
+        <td>
+          <form method="post" action="/mantenimientos/<%= m.id %>/realizado" class="inline">
+            <details>
+              <summary>Se realizó</summary>
+              <div class="row">
+                <label>Tareas realizadas</label>
+                <input name="tareas" placeholder="Cambio aceite, filtros, revisión frenos..." />
+              </div>
+              <div class="row">
+                <label>Notas</label>
+                <input name="notas" placeholder="Observaciones..." />
+              </div>
+              <button class="btn success">Confirmar y reprogramar</button>
+            </details>
+          </form>
+        </td>
+      </tr>
+    <% }) %>
+    </tbody>
+  </table>
+</section>

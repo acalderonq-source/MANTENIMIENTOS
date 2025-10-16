@@ -7,46 +7,31 @@ import dotenv from 'dotenv';
 import methodOverride from 'method-override';
 import expressLayouts from 'express-ejs-layouts';
 import dayjs from 'dayjs';
-import ExcelJS from 'exceljs';
-import fs from 'fs';
-import fsp from 'fs/promises';
 import { pool } from './db.js';
 
-import {
-  aiClassify,
-  aiSummarize,
-  aiSuggestNext,
-  aiPreventivePlan
-} from './services/ai.js';
-
 dotenv.config();
-
 const app = express();
 const __filename = fileURLToPath(import.meta.url);
-const __dirname  = path.dirname(__filename);
+const __dirname = path.dirname(__filename);
 
-// ========= Motor de vistas =========
+// ------ App ------
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(expressLayouts);
 app.set('layout', 'partials/layout');
 
-// ========= Middlewares base =========
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 app.use(methodOverride('_method'));
+app.use(express.static(path.join(__dirname, '../public')));
 
-// estáticos (CSS / imágenes / JS del browser)
-app.use(express.static(path.join(process.cwd(), 'public')));
-
-// sesión simple
 app.use(session({
   secret: process.env.SESSION_SECRET || 'dev_secret',
   resave: false,
   saveUninitialized: false
 }));
 
-// usuario simulado + dayjs a las vistas
+// Sesión simulada para pruebas
 app.use((req, res, next) => {
   if (!req.session.user) {
     req.session.user = { id: 1, username: 'admin', rol: 'ADMIN' };
@@ -56,7 +41,7 @@ app.use((req, res, next) => {
   next();
 });
 
-// ========= Helpers mínimos =========
+// ------ Utilidades de fecha ------
 function esDomingo(iso) { return dayjs(iso).day() === 0; }
 function siguienteNoDomingo(iso) {
   let d = dayjs(iso);
@@ -78,39 +63,11 @@ async function fechaSinChoque(fechaBase, excluirPlaca = null) {
     const hayChoque = Array.isArray(rows) && rows.some(r => r.placa !== excluirPlaca);
     if (!hayChoque) return fecha;
     d = d.add(1, 'day');
-    if (d.day() === 0) d = d.add(1, 'day');
+    if (d.day() === 0) d = d.add(1, 'day'); // salta domingo
   }
 }
 
-async function calcularProximoParaUnidad(unidadId) {
-  const [hist] = await pool.query(
-    `SELECT fecha_fin, fecha_inicio
-       FROM mantenimientos
-      WHERE unidad_id=?
-      ORDER BY id DESC
-      LIMIT 1`, [unidadId]
-  );
-  const ultimo = hist?.[0] || null;
-  let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
-  let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
-  if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
-  candidata = await fechaSinChoque(candidata);
-  return candidata;
-}
-
-async function programarPreventivo(unidadId, creadoPorUserId) {
-  const prox = await calcularProximoParaUnidad(unidadId);
-  const [[u]] = await pool.query(`SELECT id, cedis_id FROM unidades WHERE id=?`, [unidadId]);
-  await pool.query(
-    `INSERT INTO mantenimientos
-       (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
-     VALUES (?,?,?,?,?,?,1,?)`,
-    [unidadId, u?.cedis_id || null, 'PREVENTIVO', 'Plan preventivo sugerido', prox, null, creadoPorUserId || null]
-  );
-  return prox;
-}
-
-// ========= Rutas UI =========
+// ------ Rutas ------
 app.get('/', async (req, res) => {
   const [[kpis]] = await pool.query(`
     SELECT
@@ -131,91 +88,34 @@ app.get('/', async (req, res) => {
   res.render('dashboard', { title: 'Dashboard', kpis, mants });
 });
 
+// Unidades
 app.get('/unidades', async (req, res) => {
-  const { cedis: cedisNombre, cedis_id } = req.query;
-  const [cedisLista] = await pool.query(`SELECT id, nombre FROM cedis ORDER BY nombre`);
+  const [unidades] = await pool.query(`
+    SELECT u.*, c.nombre AS cedis_nombre
+      FROM unidades u
+      LEFT JOIN cedis c ON c.id=u.cedis_id
+     ORDER BY u.placa
+  `);
+  res.render('unidades', { title: 'Unidades', unidades });
+});
 
-  let where = '';
-  const params = [];
-  if (cedis_id) { where = 'WHERE u.cedis_id = ?'; params.push(Number(cedis_id)); }
-  else if (cedisNombre) { where = 'WHERE c.nombre = ?'; params.push(cedisNombre); }
-
-  const [unidades] = await pool.query(
-    `SELECT u.id, u.placa, u.tipo, u.kilometraje, u.estado, c.nombre AS cedis_nombre
-       FROM unidades u
-       LEFT JOIN cedis c ON c.id=u.cedis_id
-       ${where}
-      ORDER BY u.placa`, params);
-
-  const proximos = {};
-  for (const u of unidades) {
-    try { proximos[u.id] = await calcularProximoParaUnidad(u.id); }
-    catch { proximos[u.id] = null; }
+app.post('/unidades', async (req, res) => {
+  const { placa, tipo, cedis_nombre } = req.body;
+  let cedis_id = null;
+  if (cedis_nombre) {
+    await pool.query(`INSERT IGNORE INTO cedis (nombre) VALUES (?)`, [cedis_nombre]);
+    const [[ced]] = await pool.query(`SELECT id FROM cedis WHERE nombre=? LIMIT 1`, [cedis_nombre]);
+    cedis_id = ced?.id || null;
   }
-
-  res.render('unidades', {
-    title: 'Unidades',
-    unidades,
-    cedisLista,
-    filtroActual: { cedisNombre: cedisNombre || '', cedisId: cedis_id || '' },
-    proximos
-  });
+  await pool.query(
+    `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
+     VALUES (?,?,?,?,?)`,
+    [placa, tipo || 'CAMION', cedis_id, 0, 'ACTIVA']
+  );
+  res.redirect('/unidades');
 });
 
-// Programar uno
-app.post('/unidades/:id/programar', async (req, res) => {
-  await programarPreventivo(Number(req.params.id), req.session.user?.id);
-  res.redirect('/mantenimientos');
-});
-
-// API para programar uno o todos (batch)
-app.post('/ai/programar', async (req, res) => {
-  try {
-    const creadoPor = req.session.user?.id || null;
-    const body = req.body || {};
-
-    if (body.unidad_id) {
-      const unidadId = Number(body.unidad_id);
-      const prox = await programarPreventivo(unidadId, creadoPor);
-      return res.json({ ok: true, count: 1, unidad_id: unidadId, fecha: prox });
-    }
-
-    const [unidadesActivas] = await pool.query(`SELECT id FROM unidades WHERE estado='ACTIVA' ORDER BY placa`);
-    let count = 0;
-    const fechasAsignadasEnBatch = new Set();
-
-    for (const u of unidadesActivas) {
-      const [hist] = await pool.query(
-        `SELECT fecha_fin, fecha_inicio FROM mantenimientos WHERE unidad_id=? ORDER BY id DESC LIMIT 1`, [u.id]
-      );
-      const ultimo = hist?.[0] || null;
-      let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
-      let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
-      if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
-      candidata = await fechaSinChoque(candidata);
-
-      let d = dayjs(candidata);
-      while (fechasAsignadasEnBatch.has(d.format('YYYY-MM-DD')) || d.day() === 0) d = d.add(1, 'day');
-      const finalDate = d.format('YYYY-MM-DD');
-      fechasAsignadasEnBatch.add(finalDate);
-
-      const [[ur]] = await pool.query(`SELECT id, cedis_id FROM unidades WHERE id=?`, [u.id]);
-      await pool.query(
-        `INSERT INTO mantenimientos
-           (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
-         VALUES (?,?,?,?,?,?,1,?)`,
-        [u.id, ur?.cedis_id || null, 'PREVENTIVO', 'Plan preventivo sugerido', finalDate, null, creadoPor]
-      );
-      count++;
-    }
-
-    res.json({ ok: true, count });
-  } catch (e) {
-    console.error('POST /ai/programar error', e);
-    res.status(500).json({ ok: false, error: 'No se pudo programar por IA.' });
-  }
-});
-
+// Mantenimientos abiertos
 app.get('/mantenimientos', async (req, res) => {
   const [mants] = await pool.query(`
     SELECT m.*, u.placa, c.nombre AS cedis_nombre
@@ -228,6 +128,7 @@ app.get('/mantenimientos', async (req, res) => {
   res.render('mantenimientos_list', { title: 'Mantenimientos', mants });
 });
 
+// Historial (cerrados)
 app.get('/historial', async (req, res) => {
   const [rows] = await pool.query(`
     SELECT m.*, u.placa, c.nombre AS cedis_nombre
@@ -240,67 +141,125 @@ app.get('/historial', async (req, res) => {
   res.render('historial', { title: 'Historial', items: rows });
 });
 
-// ========= IA endpoints =========
-app.post('/ai/clasificar', async (req, res) => {
+// Historial por placa
+app.get('/historial/:placa', async (req, res) => {
+  const placa = req.params.placa.toUpperCase();
+  const [[u]] = await pool.query(`SELECT id, placa FROM unidades WHERE placa=? LIMIT 1`, [placa]);
+  if (!u) return res.status(404).send('Placa no encontrada');
+  const [rows] = await pool.query(`
+    SELECT m.*, c.nombre AS cedis_nombre
+      FROM mantenimientos m
+      LEFT JOIN cedis c ON c.id=m.cedis_id
+     WHERE m.unidad_id=?
+     ORDER BY m.id DESC`, [u.id]);
+  res.render('historial_placa', { title: `Historial ${placa}`, placa, items: rows });
+});
+
+// Programar preventivo (IA simple)
+app.post('/unidades/:id/programar', async (req, res) => {
+  const unidadId = Number(req.params.id);
+
+  const [hist] = await pool.query(`
+    SELECT fecha_fin, fecha_inicio
+      FROM mantenimientos
+     WHERE unidad_id=?
+     ORDER BY id DESC
+     LIMIT 1`, [unidadId]);
+  const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
+
+  let base = ultimo?.fecha_fin || ultimo?.fecha_inicio || dayjs().format('YYYY-MM-DD');
+  let candidata = dayjs(base).add(45, 'day').format('YYYY-MM-DD');
+  if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
+  candidata = await fechaSinChoque(candidata);
+
+  const [[u]] = await pool.query(`SELECT u.id, u.cedis_id FROM unidades u WHERE u.id=?`, [unidadId]);
+
+  await pool.query(
+    `INSERT INTO mantenimientos (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
+     VALUES (?,?,?,?,?,?,1,?)`,
+    [unidadId, u?.cedis_id || null, 'PREVENTIVO', 'Plan preventivo sugerido', candidata, null, req.session.user?.id || null]
+  );
+  res.redirect('/mantenimientos');
+});
+
+// Cerrar y reprogramar
+app.post('/mantenimientos/:id/realizado', async (req, res) => {
+  const id = Number(req.params.id);
+  const { tareas = '', notas = '' } = req.body;
+  const hoy = dayjs().format('YYYY-MM-DD');
+
+  await pool.query(`
+    UPDATE mantenimientos
+       SET fecha_fin=?, duracion_dias=DATEDIFF(?, COALESCE(fecha_inicio, ?))
+     WHERE id=?`,
+    [hoy, hoy, hoy, id]
+  );
+
+  const [[row]] = await pool.query(`SELECT unidad_id FROM mantenimientos WHERE id=?`, [id]);
+  if (!row) return res.redirect('/mantenimientos');
+  const unidadId = row.unidad_id;
+
+  let candidata = dayjs(hoy).add(45, 'day').format('YYYY-MM-DD');
+  if (esDomingo(candidata)) candidata = siguienteNoDomingo(candidata);
+  candidata = await fechaSinChoque(candidata);
+
+  const [[u]] = await pool.query(`SELECT u.id, u.cedis_id FROM unidades u WHERE u.id=?`, [unidadId]);
+  const motivo = `Preventivo programado. Tareas hechas: ${tareas || 'N/D'}. Notas: ${notas || 'N/D'}`;
+
+  await pool.query(
+    `INSERT INTO mantenimientos (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
+     VALUES (?,?,?,?,?,?,1,?)`,
+    [unidadId, u?.cedis_id || null, 'PREVENTIVO', motivo, candidata, null, req.session.user?.id || null]
+  );
+
+  const [[ab]] = await pool.query(
+    `SELECT COUNT(*) AS abiertos
+       FROM mantenimientos
+      WHERE unidad_id=? AND fecha_fin IS NULL`, [unidadId]);
+  if (ab.abiertos === 0) {
+    await pool.query(`UPDATE unidades SET estado='ACTIVA' WHERE id=?`, [unidadId]);
+  }
+
+  res.redirect('/mantenimientos');
+});
+
+// Seed TRANSPORTADORA (todas las placas que pediste)
+app.get('/seed/transportadora-extra', async (req, res) => {
   try {
-    const { motivo, placa, km, cedis } = req.body || {};
-    const out = await aiClassify({ motivo, placa, km, cedis });
-    res.json({ ok: true, ...out });
+    await pool.query(`INSERT IGNORE INTO cedis (nombre) VALUES ('TRANSPORTADORA')`);
+    const [[ced]] = await pool.query(`SELECT id FROM cedis WHERE nombre='TRANSPORTADORA' LIMIT 1`);
+    const cedisId = ced?.id;
+
+    const placas = [
+      'C150804','S25526','C143298','S35797','C153449','S25816','C167058','S35798','C156152','S30811',
+      'S35825','C157184','S32586','S36179','C157631','S35741','S36183','C162129','S25772','C162503',
+      'S28102','C162985','S28322','C163630','S32587','C164206','S34202','C167020','S35742','C168961',
+      'S25513','C169541','S26048','C169804','S27368','C169965','S34193','C170014','S12404','C170751',
+      'S19984','C170869','S34194','C170900','S35759','C171297','S23630','C171394','S30815','C173827',
+      'S34200','C174021','S35760','C174563','S37248','C174582','S37243','C175547','C178423','C178439',
+      'C177959','C164025','C162227'
+    ];
+
+    let insertados = 0, existentes = 0;
+    for (const placa of placas) {
+      const [u] = await pool.query(`SELECT id FROM unidades WHERE placa=? LIMIT 1`, [placa]);
+      if (Array.isArray(u) && u.length) { existentes++; continue; }
+      await pool.query(
+        `INSERT INTO unidades (placa, tipo, cedis_id, kilometraje, estado)
+         VALUES (?,?,?,?,?)`,
+        [placa, placa.startsWith('S') ? 'SEMIRREMOLQUE' : 'CAMION', cedisId, 0, 'ACTIVA']
+      );
+      insertados++;
+    }
+
+    res.send(`✅ TRANSPORTADORA extra: insertadas=${insertados}, existentes=${existentes}, cedis=${cedisId}`);
   } catch (e) {
-    console.error('POST /ai/clasificar', e);
-    res.status(500).json({ ok: false, error: 'IA clasificar falló' });
+    console.error('seed/transportadora-extra error', e);
+    res.status(500).send('No se pudo ejecutar el seed.');
   }
 });
 
-app.get('/ai/resumen/:id', async (req, res) => {
-  try {
-    const out = await aiSummarize({ pool, mantId: Number(req.params.id) });
-    res.json({ ok: true, ...out });
-  } catch (e) {
-    console.error('GET /ai/resumen', e);
-    res.status(500).json({ ok: false, error: 'IA resumen falló' });
-  }
-});
-
-app.get('/ai/siguiente/:placa', async (req, res) => {
-  try {
-    const out = await aiSuggestNext({ pool, placa: req.params.placa.toUpperCase() });
-    res.json({ ok: true, ...out });
-  } catch (e) {
-    console.error('GET /ai/siguiente', e);
-    res.status(500).json({ ok: false, error: 'IA sugerir falló' });
-  }
-});
-
-app.get('/ai/plan/:unidadId', async (req, res) => {
-  try {
-    const out = await aiPreventivePlan({ pool, unidadId: Number(req.params.unidadId) });
-    res.json({ ok: true, ...out });
-  } catch (e) {
-    console.error('GET /ai/plan', e);
-    res.status(500).json({ ok: false, error: 'IA plan falló' });
-  }
-});
-
-// ========= Debug útil =========
-app.get('/debug/env', (req, res) => {
-  res.json({
-    NODE_ENV: process.env.NODE_ENV,
-    OPENAI_MODEL: process.env.OPENAI_MODEL,
-    OPENAI_API_KEY: process.env.OPENAI_API_KEY ? '(set)' : '(missing)'
-  });
-});
-
-app.get('/debug/dbping', async (req, res) => {
-  try {
-    const [[r]] = await pool.query('SELECT 1 AS ok');
-    res.json({ ok: r?.ok === 1 });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e?.message || String(e) });
-  }
-});
-
-// ========= Arranque =========
+// ------ Arranque ------
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`✅ Servidor en http://localhost:${PORT}`);

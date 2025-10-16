@@ -1,25 +1,22 @@
-<!-- views/partials/layout.ejs -->
 <!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <meta charset="utf-8" />
   <title><%= title || 'Mantenimientos' %></title>
-  <link rel="stylesheet" href="/styles.css?v=3"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
-  <header class="top">
-    <div class="brand" style="font-weight:800">Mantenimientos</div>
+  <header class="topbar">
+    <div class="brand">Flota • Mantenimientos</div>
     <nav>
       <a href="/">Dashboard</a>
       <a href="/unidades">Unidades</a>
       <a href="/mantenimientos">Mantenimientos</a>
       <a href="/historial">Historial</a>
     </nav>
-    <div style="margin-left:auto; opacity:.8; font-size:13px;">
-      <%= (user && user.username) ? user.username : '' %>
-    </div>
   </header>
+
   <main class="container">
     <%- body %>
   </main>

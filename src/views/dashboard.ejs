@@ -1,27 +1,24 @@
-<section>
-  <h2>Dashboard</h2>
-  <div class="kpis">
-    <div class="kpi"><div class="kpi-num"><%= kpis.unidades %></div><div class="kpi-label">Unidades</div></div>
-    <div class="kpi"><div class="kpi-num"><%= kpis.en_taller %></div><div class="kpi-label">En taller</div></div>
-    <div class="kpi"><div class="kpi-num"><%= kpis.hoy %></div><div class="kpi-label">Programados hoy</div></div>
-  </div>
+<section class="kpi">
+  <div class="tile"><div class="k">Unidades</div><div class="v"><%= kpis.unidades %></div></div>
+  <div class="tile"><div class="k">En taller</div><div class="v"><%= kpis.en_taller %></div></div>
+  <div class="tile"><div class="k">Hoy</div><div class="v"><%= kpis.hoy %></div></div>
+</section>
 
-  <h3>Últimos movimientos</h3>
+<section class="card">
+  <h2>Últimos movimientos</h2>
   <table>
     <thead><tr><th>ID</th><th>Placa</th><th>CEDIS</th><th>Tipo</th><th>Inicio</th><th>Fin</th></tr></thead>
     <tbody>
-    <% if (!mants || !mants.length) { %>
-      <tr><td colspan="6">Sin datos</td></tr>
-    <% } else { mants.forEach(m => { %>
+    <% mants.forEach(m => { %>
       <tr>
         <td><%= m.id %></td>
         <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
-        <td><%= m.cedis || 'N/D' %></td>
+        <td><%= m.cedis || '' %></td>
         <td><%= m.tipo %></td>
-        <td><%= dayjs(m.fecha_inicio).format('YYYY-MM-DD') %></td>
-        <td><%= m.fecha_fin ? dayjs(m.fecha_fin).format('YYYY-MM-DD') : '—' %></td>
+        <td><%= m.fecha_inicio ? dayjs(m.fecha_inicio).format('DD/MM/YYYY') : '' %></td>
+        <td><%= m.fecha_fin ? dayjs(m.fecha_fin).format('DD/MM/YYYY') : '' %></td>
       </tr>
-    <% }) } %>
+    <% }) %>
     </tbody>
   </table>
 </section>

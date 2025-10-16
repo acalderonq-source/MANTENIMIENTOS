@@ -1,23 +1,20 @@
 {
   "name": "mantenimientos-web",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node --watch src/server.js"
+    "dev": "node --watch src/server.js",
+    "db:init": "node scripts/create-db.js"
   },
   "dependencies": {
-    "dayjs": "^1.11.18",
+    "dayjs": "^1.11.13",
     "dotenv": "^16.4.5",
     "ejs": "^3.1.10",
-    "exceljs": "^4.4.0",
     "express": "^4.19.2",
     "express-ejs-layouts": "^2.5.1",
     "express-session": "^1.17.3",
     "method-override": "^3.0.0",
-    "mysql2": "^3.11.0",
-    "node-cron": "^4.2.1",
-    "nodemailer": "^6.10.1",
-    "openai": "^6.3.0"
+    "mysql2": "^3.11.3"
   }
 }

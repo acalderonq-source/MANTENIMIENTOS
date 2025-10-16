@@ -1,18 +1,21 @@
-<h2>Historial</h2>
-<table>
-  <thead><tr><th>ID</th><th>Placa</th><th>CEDIS</th><th>Tipo</th><th>Inicio</th><th>Fin</th></tr></thead>
-  <tbody>
-  <% if (!items || !items.length) { %>
-    <tr><td colspan="6">Sin historial</td></tr>
-  <% } else { items.forEach(m => { %>
-    <tr>
-      <td><%= m.id %></td>
-      <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
-      <td><%= m.cedis_nombre || 'N/D' %></td>
-      <td><%= m.tipo %></td>
-      <td><%= dayjs(m.fecha_inicio).format('YYYY-MM-DD') %></td>
-      <td><%= m.fecha_fin ? dayjs(m.fecha_fin).format('YYYY-MM-DD') : '—' %></td>
-    </tr>
-  <% }) } %>
-  </tbody>
-</table>
+<section class="card">
+  <h1>Historial (cerrados)</h1>
+  <table>
+    <thead>
+      <tr><th>ID</th><th>Placa</th><th>CEDIS</th><th>Tipo</th><th>Inicio</th><th>Fin</th><th>Motivo</th></tr>
+    </thead>
+    <tbody>
+    <% items.forEach(m => { %>
+      <tr>
+        <td><%= m.id %></td>
+        <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
+        <td><%= m.cedis_nombre || '' %></td>
+        <td><%= m.tipo %></td>
+        <td><%= m.fecha_inicio ? dayjs(m.fecha_inicio).format('DD/MM/YYYY') : '' %></td>
+        <td><%= m.fecha_fin ? dayjs(m.fecha_fin).format('DD/MM/YYYY') : '' %></td>
+        <td><%= m.motivo || '' %></td>
+      </tr>
+    <% }) %>
+    </tbody>
+  </table>
+</section>
