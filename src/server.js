@@ -8,6 +8,20 @@ import methodOverride from 'method-override';
 import expressLayouts from 'express-ejs-layouts';
 import dayjs from 'dayjs';
 import { pool } from './db.js';
+import { pool, cfg as dbCfg } from './db.js';
+
+app.get('/debug/db', async (req, res) => {
+  try {
+    const [[r]] = await pool.query('SELECT 1 AS ok');
+    res.status(200).send(
+      `DB OK -> host=${dbCfg.host} port=${dbCfg.port} db=${dbCfg.database} ssl=${dbCfg.sslEnabled} | result=${JSON.stringify(r)}`
+    );
+  } catch (e) {
+    res.status(500).send(
+      `DB ERROR -> host=${dbCfg.host} port=${dbCfg.port} db=${dbCfg.database} ssl=${dbCfg.sslEnabled} | ${e.message}`
+    );
+  }
+});
 
 dotenv.config();
 const app = express();
