@@ -51,6 +51,91 @@ const WORK_RULES = {
   'Líquidos (freno/refrigerante)': { dias: 60 },
   'Revisión general': { dias: 45 },
 };
+// ====== IA basada en último trabajo hecho ======
+
+// Normaliza texto (acentos, mayúsculas, etc.)
+function norm(s='') {
+  return String(s)
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .toUpperCase().trim();
+}
+
+// Extrae lista de trabajos desde el campo motivo (busca "Hecho: a, b, c")
+function extraerTrabajosDeMotivo(motivo='') {
+  const m = motivo.match(/Hecho:\s*([^|]+)/i);
+  if (!m) return [];
+  return m[1]
+    .split(',')
+    .map(x => x.trim())
+    .filter(Boolean);
+}
+
+// Reglas simples por trabajo anterior -> sugerencias + días
+// Puedes ajustar días y sugerencias a tu operación real.
+const TASK_RULES = [
+  {
+    match: /ACEITE|FILTRO DE ACEITE/,
+    sugerencias: ['Revisión frenos', 'Inspección niveles', 'Chequeo fugas'],
+    dias: 90
+  },
+  {
+    match: /FRENOS|PASTILLAS|ZAPATAS|DISCOS/,
+    sugerencias: ['Balanceo y alineación', 'Inspección suspensión', 'Ajuste frenos'],
+    dias: 60
+  },
+  {
+    match: /LLANTAS|NEUMATICOS|BALANCEO|ALINEACION/,
+    sugerencias: ['Revisión presión', 'Inspección desgaste', 'Rotación de llantas'],
+    dias: 75
+  },
+  {
+    match: /SUSPENSION|AMORTIGUADORES|BUJES/,
+    sugerencias: ['Inspección dirección', 'Revisión terminales', 'Parrillas/horquillas'],
+    dias: 120
+  },
+  {
+    match: /BATERIA|ELECTRICO|ALTERNADOR|ARRANQUE/,
+    sugerencias: ['Prueba de carga', 'Limpieza bornes', 'Verificación alternador'],
+    dias: 120
+  },
+  {
+    match: /FILTRO DE AIRE|FILTRO DE COMBUSTIBLE/,
+    sugerencias: ['Inspección admisión', 'Revisión inyección', 'Chequeo consumo'],
+    dias: 90
+  },
+  // Fallback por trabajos preventivos genéricos
+  {
+    match: /PREVENTIVO|SERVICIO|CHECKLIST/,
+    sugerencias: ['Inspección general', 'Lubricación puntos', 'Reapriete tornillería'],
+    dias: 45
+  }
+];
+
+// Dada una lista de trabajos anteriores, calcula sugerencias y días
+function sugerenciasDesdeTrabajos(trabajos=[]) {
+  const tNorms = trabajos.map(norm);
+  let dias = 45; // valor por defecto
+  const setSug = new Set();
+
+  // Intenta emparejar reglas por el primer match que encuentre
+  for (const t of tNorms) {
+    for (const rule of TASK_RULES) {
+      if (rule.match.test(t)) {
+        rule.sugerencias.forEach(s => setSug.add(s));
+        // toma el mínimo “hacia delante”: si venías de algo más sensible, respeta su ciclo
+        dias = Math.min(dias, rule.dias);
+      }
+    }
+  }
+
+  // Si no hubo match en reglas, sugiere algo seguro
+  if (setSug.size === 0) {
+    ['Inspección general', 'Revisión niveles', 'Chequeo visual'].forEach(s => setSug.add(s));
+    dias = 45;
+  }
+
+  return { sugerencias: Array.from(setSug), dias };
+}
 
 function diasBasePorTrabajos(trabajos = []) {
   let dias = 45; // base default
@@ -249,6 +334,25 @@ app.post('/unidades/:id/programar', async (req, res) => {
 // Filtro por cede + acciones (programar cede completa / eliminar / cerrar / no realizado)
 app.get('/mantenimientos', async (req, res) => {
   try {
+    fetch('/api/ia/sugerencias/' + id)
+  .then(r => r.json())
+  .then(d => {
+    // Mostrar sugerencias y pre-seleccionarlas como “propuesta”
+    const box = document.getElementById('sug-' + id);
+    if (d.sugerencias?.length) {
+      box.innerHTML = 'Sugerido por IA: ' + d.sugerencias.join(', ');
+      d.sugerencias.forEach(s => {
+        const input = dlg.querySelector('input[type=checkbox][value="'+s+'"]');
+        if (input) input.checked = true;
+      });
+    } else {
+      box.innerHTML = 'Sin sugerencias.';
+    }
+    // También podrías pre-rellenar una fecha en un input hidden si quieres
+    const f = dlg.querySelector('input[name=fecha_siguiente]');
+    if (f && d.fecha_sugerida) f.value = d.fecha_sugerida;
+  });
+
     const cedisId = req.query.cedis_id || '';
     const [cedis] = await pool.query('SELECT * FROM cedis ORDER BY nombre');
 
@@ -502,6 +606,65 @@ app.delete('/mantenimientos/:id', async (req, res) => {
 // ====== Endpoint opcional: sugerencias rápidas de trabajos por mantId ======
 app.get('/api/ia/sugerencias/:mantId', async (req, res) => {
   try {
+    // GET /api/ia/sugerencias/:mantId
+// Retorna: { sugerencias: [..], fecha_sugerida: 'YYYY-MM-DD', basado_en: [trabajos] }
+app.get('/api/ia/sugerencias/:mantId', async (req, res) => {
+  try {
+    const mantId = Number(req.params.mantId);
+    if (!mantId) return res.status(400).json({ error: 'mantId inválido' });
+
+    // 1) Trae el mantenimiento actual para ubicar la unidad
+    const [[actual]] = await pool.query('SELECT id, unidad_id FROM mantenimientos WHERE id=?', [mantId]);
+    if (!actual) return res.status(404).json({ error: 'Mantenimiento no encontrado' });
+
+    // 2) Busca el mantenimiento anterior (cerrado) de esa unidad (id < actual)
+    const [prevs] = await pool.query(`
+      SELECT id, tipo, fecha_inicio, fecha_fin, motivo
+        FROM mantenimientos
+       WHERE unidad_id = ?
+         AND fecha_fin IS NOT NULL
+         AND id < ?
+       ORDER BY id DESC
+       LIMIT 1
+    `, [actual.unidad_id, mantId]);
+
+    let trabajosPrev = [];
+    let baseFecha = dayjs(); // si no hay anterior, partimos de hoy
+    if (prevs && prevs[0]) {
+      trabajosPrev = extraerTrabajosDeMotivo(prevs[0].motivo || '');
+      baseFecha = dayjs(prevs[0].fecha_fin || prevs[0].fecha_inicio || dayjs());
+    }
+
+    // 3) Calcula sugerencias y días desde trabajos previos
+    const { sugerencias, dias } = sugerenciasDesdeTrabajos(trabajosPrev);
+
+    // 4) Aplica tu lógica de fecha (evitar domingo + espaciar 7 días)
+    const setFechas = await obtenerFechasProgramadas(); // usa la función que ya tienes
+    let fecha = baseFecha.add(dias, 'day');
+    while (fecha.day() === 0) fecha = fecha.add(1, 'day'); // evita domingo
+    // espaciar 7 días
+    const colisiona = (cand) => {
+      const c = dayjs(cand);
+      for (const val of setFechas) {
+        const d = dayjs(val);
+        const diff = Math.abs(c.diff(d, 'day'));
+        if (diff < 7) return true;
+      }
+      return false;
+    };
+    while (colisiona(fecha)) fecha = fecha.add(1, 'day');
+
+    res.json({
+      sugerencias,
+      fecha_sugerida: fecha.format('YYYY-MM-DD'),
+      basado_en: trabajosPrev
+    });
+  } catch (e) {
+    console.error('ia/sugerencias error', e);
+    res.status(500).json({ error: 'No se pudieron generar sugerencias' });
+  }
+});
+
     const mantId = Number(req.params.mantId);
     const [[m]] = await pool.query('SELECT unidad_id FROM mantenimientos WHERE id=?', [mantId]);
     if (!m) return res.json({ sugerencias: [] });
