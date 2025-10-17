@@ -246,23 +246,107 @@ app.post('/unidades/:id/programar', async (req, res) => {
 });
 
 // ====== Mantenimientos abiertos e historial ======
+// Filtro por cede + acciones (programar cede completa / eliminar / cerrar / no realizado)
 app.get('/mantenimientos', async (req, res) => {
   try {
-    const [abiertos] = await pool.query(`
-      SELECT m.*, u.placa, c.nombre AS cedis_nombre
-        FROM mantenimientos m
-        JOIN unidades u ON u.id=m.unidad_id
-        LEFT JOIN cedis c ON c.id=m.cedis_id
-       WHERE m.fecha_fin IS NULL
-       ORDER BY m.id DESC
-    `);
-    res.render('mantenimientos_list', { title: 'Mantenimientos', mants: abiertos });
+    const cedisId = req.query.cedis_id || '';
+    const [cedis] = await pool.query('SELECT * FROM cedis ORDER BY nombre');
+
+    let abiertos = [];
+    if (cedisId) {
+      const [rows] = await pool.query(`
+        SELECT m.*, u.placa, c.nombre AS cedis_nombre
+          FROM mantenimientos m
+          JOIN unidades u ON u.id=m.unidad_id
+          LEFT JOIN cedis c ON c.id=m.cedis_id
+         WHERE m.fecha_fin IS NULL
+           AND (m.cedis_id = ? OR u.cedis_id = ?)
+         ORDER BY m.id DESC
+      `, [cedisId, cedisId]);
+      abiertos = rows;
+    } else {
+      const [rows] = await pool.query(`
+        SELECT m.*, u.placa, c.nombre AS cedis_nombre
+          FROM mantenimientos m
+          JOIN unidades u ON u.id=m.unidad_id
+          LEFT JOIN cedis c ON c.id=m.cedis_id
+         WHERE m.fecha_fin IS NULL
+         ORDER BY m.id DESC
+      `);
+      abiertos = rows;
+    }
+
+    res.render('mantenimientos_list', { title: 'Mantenimientos', mants: abiertos, cedis, cedisId });
   } catch (e) {
     console.error('mants abiertos error', e);
     res.status(500).send('No se pudo listar mantenimientos');
   }
 });
 
+// Programar por IA todas las unidades de una CEDE
+app.post('/mantenimientos/programar-cede', async (req, res) => {
+  try {
+    const cedisId = Number(req.body.cedis_id);
+    if (!cedisId) return res.status(400).send('cedis_id requerido');
+
+    // Unidades de la cede
+    const [unidades] = await pool.query(
+      `SELECT * FROM unidades WHERE cedis_id=? ORDER BY placa`,
+      [cedisId]
+    );
+    if (!Array.isArray(unidades) || unidades.length === 0) {
+      return res.redirect('/mantenimientos?cedis_id=' + cedisId);
+    }
+
+    // Empezar con fechas ya programadas para respetar separación
+    const setFechas = await obtenerFechasProgramadas();
+
+    for (const u of unidades) {
+      // Evitar duplicar si ya tiene abierto
+      const [[ab]] = await pool.query(
+        `SELECT COUNT(*) AS abiertos FROM mantenimientos WHERE unidad_id=? AND fecha_fin IS NULL`,
+        [u.id]
+      );
+      if ((ab?.abiertos || 0) > 0) continue;
+
+      // Proponer fecha con reglas (sin trabajos específicos)
+      const [hist] = await pool.query(
+        `SELECT id, tipo, fecha_inicio, fecha_fin
+           FROM mantenimientos
+          WHERE unidad_id=?
+          ORDER BY id DESC LIMIT 1`,
+        [u.id]
+      );
+      const ultimo = Array.isArray(hist) && hist[0] ? hist[0] : null;
+      let baseDias = 45;
+      if (ultimo && String(ultimo.tipo || '').toUpperCase() === 'CORRECTIVO') baseDias = 30;
+
+      let base = ultimo ? (ultimo.fecha_fin || ultimo.fecha_inicio) : dayjs().format('YYYY-MM-DD');
+      let candidata = dayjs(base).add(baseDias, 'day');
+      candidata = siguienteHabil(candidata);
+      candidata = espaciar7dias(candidata, setFechas);
+
+      const fecha = candidata.format('YYYY-MM-DD');
+
+      await pool.query(
+        `INSERT INTO mantenimientos
+          (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
+         VALUES (?,?, 'PREVENTIVO', 'Plan preventivo sugerido (cede)', ?, ?, 1, ?)`,
+        [u.id, u.cedis_id || cedisId, fecha, u.kilometraje || null, req.session.user?.id || null]
+      );
+
+      // bloquear esa fecha para siguientes unidades (espaciado)
+      setFechas.add(fecha);
+    }
+
+    res.redirect('/mantenimientos?cedis_id=' + cedisId);
+  } catch (e) {
+    console.error('programar-cede error', e);
+    res.status(500).send('No se pudo programar la cede');
+  }
+});
+
+// ====== Historial ======
 app.get('/historial', async (req, res) => {
   try {
     const [cerrados] = await pool.query(`
@@ -361,6 +445,57 @@ app.post('/mantenimientos/:id/realizado', async (req, res) => {
   } catch (e) {
     console.error('cerrar/reprogramar error', e);
     res.status(500).send('No se pudo cerrar y reprogramar');
+  }
+});
+
+// ====== No se realizó (cierra SIN reprogramar) ======
+app.post('/mantenimientos/:id/no-realizado', async (req, res) => {
+  const mantId = Number(req.params.id);
+  try {
+    const [[mant]] = await pool.query('SELECT * FROM mantenimientos WHERE id=?', [mantId]);
+    if (!mant) return res.status(404).send('Mantenimiento no encontrado');
+    const hoy = dayjs().format('YYYY-MM-DD');
+
+    await pool.query(
+      `
+      UPDATE mantenimientos
+         SET fecha_fin=?,
+             reservado_inventario=0,
+             motivo = CONCAT(COALESCE(motivo,''), ' | NO REALIZADO')
+       WHERE id=?
+      `,
+      [hoy, mantId]
+    );
+
+    // Liberar unidad si no tiene otros abiertos
+    const [[rowU]] = await pool.query('SELECT unidad_id FROM mantenimientos WHERE id=?', [mantId]);
+    const unidadId = rowU?.unidad_id;
+    if (unidadId) {
+      const [[ab]] = await pool.query(
+        'SELECT COUNT(*) AS abiertos FROM mantenimientos WHERE unidad_id=? AND fecha_fin IS NULL',
+        [unidadId]
+      );
+      if ((ab?.abiertos || 0) === 0) {
+        await pool.query("UPDATE unidades SET estado='ACTIVA' WHERE id=?", [unidadId]);
+      }
+    }
+
+    res.redirect('/mantenimientos');
+  } catch (e) {
+    console.error('no-realizado error', e);
+    res.status(500).send('No se pudo marcar como no realizado');
+  }
+});
+
+// ====== Eliminar mantenimiento ======
+app.delete('/mantenimientos/:id', async (req, res) => {
+  const mantId = Number(req.params.id);
+  try {
+    await pool.query('DELETE FROM mantenimientos WHERE id=?', [mantId]);
+    res.redirect('/mantenimientos');
+  } catch (e) {
+    console.error('eliminar mant error', e);
+    res.status(500).send('No se pudo eliminar');
   }
 });
 
