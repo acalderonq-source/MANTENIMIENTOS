@@ -1,13 +1,13 @@
 <section class="card">
   <h1>Unidades</h1>
 
-  <form method="get" class="filters">
-    <label>
-      <span>Cede</span>
+  <!-- Filtro por cede -->
+  <form method="get" action="/unidades" class="row gap">
+    <label>Cede:
       <select name="cedis_id" onchange="this.form.submit()">
         <option value="">— Todas —</option>
-        <% (cedis || []).forEach(c => { %>
-          <option value="<%= c.id %>" <%= String(cedisId||'')===String(c.id) ? 'selected' : '' %>><%= c.nombre %></option>
+        <% (cedis||[]).forEach(c => { %>
+          <option value="<%= c.id %>" <%= String(cedisId||'')===String(c.id)?'selected':'' %>><%= c.nombre %></option>
         <% }) %>
       </select>
     </label>
@@ -15,23 +15,36 @@
 
   <table class="table">
     <thead>
-      <tr><th>Placa</th><th>Cede</th><th>Tipo</th><th>Km</th><th>Estado</th><th>Acciones</th></tr>
+      <tr><th>Placa</th><th>Cede</th><th>Tipo</th><th>Kilometraje</th><th>Estado</th><th>Acciones</th></tr>
     </thead>
     <tbody>
-      <% (unidades || []).forEach(u => { %>
+      <% (unidades||[]).forEach(u => { %>
         <tr>
           <td><a href="/historial/<%= u.placa %>"><%= u.placa %></a></td>
-          <td><%= u.cedis_nombre || '-' %></td>
-          <td><%= u.tipo || '-' %></td>
-          <td><%= u.kilometraje || 0 %></td>
-          <td><%= u.estado || 'ACTIVA' %></td>
+          <td><%= u.cedis_nombre || '—' %></td>
+          <td><%= u.tipo || '—' %></td>
+          <td><%= u.kilometraje ?? '—' %></td>
+          <td><%= u.estado || '—' %></td>
           <td>
-            <form method="post" action="/unidades/<%= u.id %>/programar" style="display:inline">
-              <button class="btn primary" type="submit">Programar por IA</button>
+            <form method="post" action="/unidades/<%= u.id %>/programar<%= cedisId ? ('?cedis_id='+cedisId) : '' %>">
+              <button class="btn primary">📅 Programar</button>
             </form>
           </td>
         </tr>
       <% }) %>
     </tbody>
   </table>
+
+  <!-- Programar cede completa -->
+  <form method="post" action="/unidades/programar-cede" class="row gap" style="margin-top:8px;">
+    <label>Programar cede completa:
+      <select name="cedis_id" required>
+        <option value="">— Seleccionar cede —</option>
+        <% (cedis||[]).forEach(c => { %>
+          <option value="<%= c.id %>"><%= c.nombre %></option>
+        <% }) %>
+      </select>
+    </label>
+    <button class="btn primary">Programar</button>
+  </form>
 </section>

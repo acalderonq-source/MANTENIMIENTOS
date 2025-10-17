@@ -1,133 +1,64 @@
 <section class="card">
   <h1>Mantenimientos abiertos</h1>
 
-  <!-- Toolbar: FILTRO POR CEDE -->
-  <form method="get" class="filters" style="display:flex; gap:.75rem; align-items:flex-end; flex-wrap:wrap">
-    <label>
-      <span>Cede</span>
+  <!-- Filtro por cede -->
+  <form method="get" action="/mantenimientos" class="row gap">
+    <label>Cede:
       <select name="cedis_id" onchange="this.form.submit()">
         <option value="">— Todas —</option>
-        <% (cedis || []).forEach(c => { %>
-          <option value="<%= c.id %>" <%= String(cedisId||'')===String(c.id) ? 'selected' : '' %>><%= c.nombre %></option>
+        <% (cedis||[]).forEach(c => { %>
+          <option value="<%= c.id %>" <%= String(cedisId||'')===String(c.id)?'selected':'' %>><%= c.nombre %></option>
         <% }) %>
       </select>
     </label>
   </form>
 
-  <!-- Botón separado (NO anidar forms) -->
-  <div style="margin:.5rem 0; display:flex; justify-content:flex-end">
-    <form method="post" action="/mantenimientos/programar-cede" onsubmit="return confirmProgCede(event)" style="display:inline">
-      <input type="hidden" name="cedis_id" value="<%= String(cedisId || '') %>">
-      <button class="btn primary" type="submit" <%= cedisId ? '' : 'disabled' %>>Programar cede por IA</button>
-    </form>
-  </div>
+  <!-- Programar cede completa -->
+  <form method="post" action="/unidades/programar-cede" class="row gap" style="margin-top:8px;">
+    <label>Programar cede completa:
+      <select name="cedis_id" required>
+        <option value="">— Seleccionar cede —</option>
+        <% (cedis||[]).forEach(c => { %>
+          <option value="<%= c.id %>"><%= c.nombre %></option>
+        <% }) %>
+      </select>
+    </label>
+    <button class="btn primary">Programar</button>
+  </form>
 
   <table class="table">
     <thead>
       <tr>
-        <th>ID</th><th>Placa</th><th>Cede</th><th>Tipo</th><th>Inicio</th><th style="width:320px">Operación</th>
+        <th>ID</th><th>Placa</th><th>Cede</th><th>Tipo</th><th>Fecha</th><th>Acciones</th>
       </tr>
     </thead>
     <tbody>
-    <% (mants || []).forEach(m => { %>
-      <tr>
-        <td><%= m.id %></td>
-        <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
-        <td><%= m.cedis_nombre || '-' %></td>
-        <td><%= m.tipo %></td>
-        <td><%= m.fecha_inicio ? dayjs(m.fecha_inicio).format('DD/MM/YYYY') : '-' %></td>
-        <td style="display:flex; gap:.35rem; flex-wrap:wrap">
-          <button class="btn success" type="button" data-id="<%= m.id %>" onclick="openCloseModal(this.dataset.id)">✅ Se realizó</button>
+      <% (mants||[]).forEach(m => { %>
+        <tr>
+          <td><%= m.id %></td>
+          <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
+          <td><%= m.cedis_nombre || '—' %></td>
+          <td><%= m.tipo %></td>
+          <td><%= m.fecha_inicio ? dayjs(m.fecha_inicio).format('DD/MM/YYYY') : '—' %></td>
+          <td>
+            <!-- Se realizó (trabajos + comentario) -->
+            <form method="post" action="/mantenimientos/<%= m.id %>/realizado<%= cedisId ? ('?cedis_id='+cedisId) : '' %>" class="row" style="gap:.5rem; flex-wrap:wrap;">
+              <label><input type="checkbox" name="trabajos" value="Cambio de aceite"> Aceite</label>
+              <label><input type="checkbox" name="trabajos" value="Cambio de filtros"> Filtros</label>
+              <label><input type="checkbox" name="trabajos" value="Ajuste de frenos"> Frenos</label>
+              <label><input type="checkbox" name="trabajos" value="Rotación de llantas"> Llantas</label>
+              <label><input type="checkbox" name="trabajos" value="Revisión de correas"> Correas</label>
+              <input type="text" name="comentario" placeholder="Comentario" style="min-width:220px;">
+              <button class="btn success">✅ Se realizó</button>
+            </form>
 
-          <form method="post" action="/mantenimientos/<%= m.id %>/no-realizado" style="display:inline" onsubmit="return confirm('¿Marcar como NO realizado?')">
-            <button class="btn" type="submit">No se realizó</button>
-          </form>
-
-          <form method="post" action="/mantenimientos/<%= m.id %>?_method=DELETE" style="display:inline" onsubmit="return confirm('¿Eliminar mantenimiento?')">
-            <button class="btn" type="submit">Eliminar</button>
-          </form>
-        </td>
-      </tr>
-
-      <!-- Modal cerrar -->
-      <dialog id="closeDlg-<%= m.id %>" class="modal">
-        <form method="post" action="/mantenimientos/<%= m.id %>/realizado" class="form modal-content">
-          <h3>Cerrar mantenimiento — <%= m.placa %></h3>
-
-          <fieldset class="checklist">
-            <legend>¿Qué se le hizo?</legend>
-            <% const opciones = [
-              'Cambio de aceite',
-              'Filtro de aire',
-              'Pastillas/frenos',
-              'Alineación/balanceo',
-              'Rotación de llantas',
-              'Líquidos (freno/refrigerante)',
-              'Revisión general'
-            ]; %>
-            <div class="grid-2">
-              <% opciones.forEach(op => { %>
-                <label class="chk">
-                  <input type="checkbox" name="trabajos" value="<%= op %>"> <span><%= op %></span>
-                </label>
-              <% }); %>
-            </div>
-          </fieldset>
-
-          <div id="sug-<%= m.id %>" class="muted" style="margin:.5rem 0;">Cargando sugerencias…</div>
-
-          <label class="field">
-            <span>Comentario (opcional)</span>
-            <textarea name="comentario" rows="3" placeholder="Observaciones…"></textarea>
-          </label>
-
-          <div class="actions">
-            <button type="submit" class="btn primary">Cerrar y reprogramar</button>
-            <button type="button" class="btn" data-id="<%= m.id %>" onclick="closeCloseModal(this.dataset.id)">Cancelar</button>
-          </div>
-        </form>
-      </dialog>
-    <% }) %>
+            <!-- Eliminar (opcional) -->
+            <form method="post" action="/mantenimientos/<%= m.id %>/delete<%= cedisId ? ('?cedis_id='+cedisId) : '' %>" onsubmit="return confirm('¿Eliminar mantenimiento <%= m.id %>?')" style="margin-top:.5rem;">
+              <button class="btn danger">🗑️ Eliminar</button>
+            </form>
+          </td>
+        </tr>
+      <% }) %>
     </tbody>
   </table>
 </section>
-
-<script>
-  function confirmProgCede(ev){
-    if(!('<%= String(cedisId || "") %>')) {
-      alert('Primero selecciona una CEDE.');
-      ev.preventDefault();
-      return false;
-    }
-    return confirm('¿Programar por IA todas las unidades de esta CEDE?');
-  }
-
-  function openCloseModal(id) {
-    const dlg = document.getElementById('closeDlg-' + id);
-    if (dlg && dlg.showModal) dlg.showModal();
-    // Sugerencias “IA”
-    fetch('/api/ia/sugerencias/' + id)
-      .then(r => r.json())
-      .then(({ sugerencias }) => {
-        const box = document.getElementById('sug-' + id);
-        if (Array.isArray(sugerencias) && sugerencias.length) {
-          box.innerHTML = 'Sugerido por IA: ' + sugerencias.join(', ');
-          // Preseleccionar sugerencias
-          sugerencias.forEach(s => {
-            const input = dlg.querySelector('input[type=checkbox][value="'+s+'"]');
-            if (input) input.checked = true;
-          });
-        } else {
-          box.innerHTML = 'Sin sugerencias.';
-        }
-      })
-      .catch(() => {
-        const box = document.getElementById('sug-' + id);
-        if (box) box.innerHTML = 'No se pudo obtener sugerencias.';
-      });
-  }
-  function closeCloseModal(id) {
-    const dlg = document.getElementById('closeDlg-' + id);
-    if (dlg && dlg.close) dlg.close();
-  }
-</script>

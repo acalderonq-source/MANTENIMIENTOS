@@ -3,15 +3,9 @@
   <% if (typeof error !== 'undefined' && error) { %>
     <div class="alert error"><%= error %></div>
   <% } %>
-  <form method="post" action="/login" class="form">
-    <label class="field">
-      <span>Usuario</span>
-      <input type="text" name="username" required />
-    </label>
-    <label class="field">
-      <span>Contraseña</span>
-      <input type="password" name="password" required />
-    </label>
-    <button class="btn primary" type="submit">Entrar</button>
+  <form method="post" action="/login" class="col">
+    <label>Usuario <input name="username" required></label>
+    <label>Contraseña <input name="password" type="password" required></label>
+    <button class="btn primary">Entrar</button>
   </form>
 </section>

@@ -52,3 +52,6 @@ INSERT IGNORE INTO roles(id, nombre) VALUES (1,'ADMIN'),(2,'OPERADOR');
 -- Usuario admin/admin (hash bcrypt)
 INSERT IGNORE INTO usuarios (id, username, password_hash, rol_id, activo) VALUES
 (1,'admin','$2a$10$3V4Eo0oP2mKQy4i5oUxcQeRr1qB8hP4G7dN3r4aQb3qfKk1eP0v5W',1,1);
+ALTER TABLE mantenimientos
+  DROP COLUMN duracion_dias,
+  ADD COLUMN duracion_dias INT GENERATED ALWAYS AS (DATEDIFF(COALESCE(fecha_fin, CURDATE()), fecha_inicio)) STORED;
