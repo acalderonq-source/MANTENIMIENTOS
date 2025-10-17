@@ -1,5 +1,3 @@
-<% layout('partials/layout') %>
-
 <section class="card">
   <div class="card-header" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;justify-content:space-between">
     <h1 style="margin:0;">Mantenimientos abiertos</h1>
@@ -54,9 +52,6 @@
                       data-placa="<%= m.placa %>"
                       type="button">✅ Se realizó</button>
 
-              <!-- Editar (si tienes vista) -->
-              <!-- <a class="btn warning" href="/mantenimientos/<%= m.id %>/edit">✏️ Editar</a> -->
-
               <!-- Eliminar -->
               <form method="post" action="/mantenimientos/<%= m.id %>/delete" style="display:inline" onsubmit="return confirm('Eliminar mantenimiento <%= m.id %>?')">
                 <button class="btn danger" type="submit">🗑 Eliminar</button>
@@ -93,7 +88,7 @@
       $placa.textContent = placa || '—';
       $title.textContent = `Cerrar mantenimiento #${id}`;
 
-      // Opcional: pedir recomendación al backend según el último mantenimiento
+      // pedir recomendación al backend
       try {
         const r = await fetch(`/api/ia/recomendar?mantId=${encodeURIComponent(id)}`);
         if (r.ok) {
@@ -118,7 +113,6 @@
 
   // envío
   $form.addEventListener('submit', ()=>{
-    // el form ya hace POST a /mantenimientos/:id/realizado (action se arma dinámicamente)
     const id = $id.value;
     $form.action = `/mantenimientos/${encodeURIComponent(id)}/realizado`;
   });
