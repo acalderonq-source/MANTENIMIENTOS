@@ -1,0 +1,57 @@
+<div id="modal-realizado" class="modal">
+  <div class="modal-dialog">
+    <div class="modal-header">
+      <h3 id="modal-title">Cerrar mantenimiento</h3>
+      <button id="modal-close" class="btn ghost" type="button">✕</button>
+    </div>
+
+    <div class="modal-body">
+      <p style="margin:.25rem 0 1rem 0;opacity:.8">Placa: <strong id="modal-placa">—</strong></p>
+
+      <form id="modal-form" method="post">
+        <fieldset class="grid-2">
+          <label class="check"><input type="checkbox" name="trabajos" value="Cambio de aceite"> Cambio de aceite</label>
+          <label class="check"><input type="checkbox" name="trabajos" value="Cambio de filtros"> Cambio de filtros</label>
+          <label class="check"><input type="checkbox" name="trabajos" value="Revisión frenos"> Revisión frenos</label>
+          <label class="check"><input type="checkbox" name="trabajos" value="Alineación y balanceo"> Alineación y balanceo</label>
+          <label class="check"><input type="checkbox" name="trabajos" value="Revisión suspensión"> Revisión suspensión</label>
+          <label class="check"><input type="checkbox" name="trabajos" value="Diagnóstico eléctrico"> Diagnóstico eléctrico</label>
+          <label class="check"><input type="checkbox" name="trabajos" value="Cambio de llantas"> Cambio de llantas</label>
+          <label class="check"><input type="checkbox" name="trabajos" value="Revisión fugas"> Revisión fugas</label>
+        </fieldset>
+
+        <label class="field mt">
+          <span>Comentario</span>
+          <textarea name="comentario" rows="3" placeholder="Notas del trabajo realizado…"></textarea>
+        </label>
+
+        <input type="hidden" id="modal-mant-id" value="">
+        <div class="muted mt">Sugerencia IA: <span id="modal-recomendacion">—</span></div>
+
+        <div class="modal-footer">
+          <button class="btn" type="button" id="modal-close-2">Cancelar</button>
+          <button class="btn success" type="submit">Guardar y reprogramar</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<style>
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:none;align-items:center;justify-content:center;z-index:9999;padding:12px}
+.modal.open{display:flex}
+.modal-dialog{background:#0b1220;color:#fff;width:min(680px,95vw);border-radius:14px;box-shadow:0 20px 60px rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.06)}
+.modal-header{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-bottom:1px solid rgba(255,255,255,.06)}
+.modal-body{padding:16px}
+.modal-footer{display:flex;justify-content:flex-end;gap:8px;margin-top:10px}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.check{display:flex;align-items:center;gap:8px;padding:8px;background:#0f172a;border-radius:10px;border:1px solid rgba(255,255,255,.06)}
+.muted{opacity:.8;font-size:.9rem}
+.mt{margin-top:.5rem}
+</style>
+
+<script>
+document.getElementById('modal-close-2')?.addEventListener('click',()=>{
+  document.getElementById('modal-realizado').classList.remove('open');
+});
+</script>

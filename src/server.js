@@ -49,6 +49,13 @@ async function nombreCedis(cedisId) {
   const [[row]] = await pool.query('SELECT nombre FROM cedis WHERE id=?', [cedisId]);
   return row?.nombre || null;
 }
+function rangoMes(yyyyMM) {
+  const base = yyyyMM && /^\d{4}-\d{2}$/.test(yyyyMM) ? dayjs(`${yyyyMM}-01`) : dayjs().startOf('month');
+  const ini = base.startOf('month').format('YYYY-MM-DD');
+  const fin = base.endOf('month').format('YYYY-MM-DD');
+  return { ini, fin, mes: base.format('YYYY-MM') };
+}
+
 function esDomingo(iso) { return dayjs(iso).day() === 0; }
 function siguienteHabil(iso) { let d = dayjs(iso); while (d.day() === 0) d = d.add(1,'day'); return d; }
 async function conteoDiaCedis(cedisId, fechaISO) {
@@ -145,6 +152,37 @@ app.post('/login', async (req, res) => {
     res.render('login', { title: 'Iniciar sesión', error: 'No se pudo iniciar sesión' });
   }
 });
+app.get('/api/ia/recomendar', async (req, res) => {
+  try {
+    const mantId = Number(req.query.mantId || 0);
+    if (!mantId) return res.json({ recomendacion: '—' });
+
+    // último historial de esa unidad
+    const [[row]] = await pool.query(
+      `SELECT m.unidad_id, m.tipo, m.motivo
+         FROM mantenimientos m
+        WHERE m.id = ?`, [mantId]
+    );
+    if (!row) return res.json({ recomendacion: '—' });
+
+    // Reglas simples por ejemplo:
+    let r = 'Revisión general en 45 días.';
+    const motivo = (row.motivo || '').toLowerCase();
+    if (motivo.includes('aceite') || motivo.includes('filtro')) {
+      r = 'Cambio de aceite/filtros en 35–45 días.';
+    } else if (motivo.includes('freno')) {
+      r = 'Revisión de frenos en 30–40 días.';
+    } else if (motivo.includes('alineación') || motivo.includes('balanceo')) {
+      r = 'Alineación/balanceo en 40 días.';
+    } else if (row.tipo && String(row.tipo).toUpperCase() === 'CORRECTIVO') {
+      r = 'Seguimiento correctivo en máximo 30 días.';
+    }
+    return res.json({ recomendacion: r });
+  } catch {
+    return res.json({ recomendacion: '—' });
+  }
+});
+
 app.get('/logout', (req, res) => { req.session.destroy(() => res.redirect('/login')); });
 
 /* = Dashboard (AHORA enviamos "mes") = */
@@ -199,26 +237,46 @@ app.get('/unidades', async (req, res, next) => {
 });
 
 /* = Mantenimientos abiertos = */
-app.get('/mantenimientos', async (req, res, next) => {
+app.get('/mantenimientos', async (req, res) => {
   try {
-    const cedisId = (req.query.cedis_id || '').trim();
-    const [cedis] = await pool.query('SELECT id, nombre FROM cedis ORDER BY nombre');
+    const { mes, placa } = req.query;
+    const { ini, fin, mes: mesNorm } = rangoMes(mes);
 
+    // Sólo mantenimientos abiertos del mes (fecha_inicio dentro del mes)
+    // y opcionalmente filtrados por placa
     let sql = `
       SELECT m.*, u.placa, c.nombre AS cedis_nombre
         FROM mantenimientos m
         JOIN unidades u ON u.id = m.unidad_id
         LEFT JOIN cedis c ON c.id = m.cedis_id
        WHERE m.fecha_fin IS NULL
+         AND m.fecha_inicio BETWEEN ? AND ?
     `;
-    const params = [];
-    if (cedisId) { sql += ' AND m.cedis_id = ?'; params.push(cedisId); }
-    sql += ' ORDER BY m.fecha_inicio IS NULL DESC, m.fecha_inicio ASC, m.id DESC';
+    const params = [ini, fin];
 
-    const [mants] = await pool.query(sql, params);
+    if (placa && placa.trim()) {
+      sql += ` AND u.placa LIKE ?`;
+      params.push(`%${placa.trim().toUpperCase()}%`);
+    }
 
-    res.render('mantenimientos_list', { title: 'Mantenimientos abiertos', mants, cedis, cedisId });
-  } catch (e) { next(e); }
+    sql += ` ORDER BY m.fecha_inicio ASC, m.id DESC`;
+
+    const [abiertos] = await pool.query(sql, params);
+
+    // CEDIS para futuros filtros (si luego quieres por CEDIS)
+    const [cedis] = await pool.query('SELECT * FROM cedis ORDER BY nombre');
+
+    res.render('mantenimientos_list', {
+      title: 'Mantenimientos abiertos',
+      mants: abiertos,
+      cedis,
+      mes: mesNorm,
+      placa: placa || ''
+    });
+  } catch (e) {
+    console.error('mants abiertos error', e);
+    res.status(500).send('No se pudo listar mantenimientos');
+  }
 });
 
 /* = Historial = */

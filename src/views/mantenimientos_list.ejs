@@ -1,64 +1,126 @@
+<% layout('partials/layout') %>
+
 <section class="card">
-  <h1>Mantenimientos abiertos</h1>
+  <div class="card-header" style="display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap;justify-content:space-between">
+    <h1 style="margin:0;">Mantenimientos abiertos</h1>
 
-  <!-- Filtro por cede -->
-  <form method="get" action="/mantenimientos" class="row gap">
-    <label>Cede:
-      <select name="cedis_id" onchange="this.form.submit()">
-        <option value="">— Todas —</option>
-        <% (cedis||[]).forEach(c => { %>
-          <option value="<%= c.id %>" <%= String(cedisId||'')===String(c.id)?'selected':'' %>><%= c.nombre %></option>
-        <% }) %>
-      </select>
-    </label>
-  </form>
+    <form method="get" class="row" style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+      <label class="field">
+        <span>Mes</span>
+        <input type="month" name="mes" value="<%= mes || dayjs().format('YYYY-MM') %>">
+      </label>
+      <label class="field">
+        <span>Placa</span>
+        <input type="text" name="placa" placeholder="Buscar placa…" value="<%= (placa||'') %>">
+      </label>
+      <button class="btn">Filtrar</button>
+      <a href="/mantenimientos" class="btn ghost">Limpiar</a>
+    </form>
+  </div>
 
-  <!-- Programar cede completa -->
-  <form method="post" action="/unidades/programar-cede" class="row gap" style="margin-top:8px;">
-    <label>Programar cede completa:
-      <select name="cedis_id" required>
-        <option value="">— Seleccionar cede —</option>
-        <% (cedis||[]).forEach(c => { %>
-          <option value="<%= c.id %>"><%= c.nombre %></option>
-        <% }) %>
-      </select>
-    </label>
-    <button class="btn primary">Programar</button>
-  </form>
-
-  <table class="table">
-    <thead>
-      <tr>
-        <th>ID</th><th>Placa</th><th>Cede</th><th>Tipo</th><th>Fecha</th><th>Acciones</th>
-      </tr>
-    </thead>
-    <tbody>
-      <% (mants||[]).forEach(m => { %>
+  <div class="table-responsive">
+    <table class="table">
+      <thead>
         <tr>
-          <td><%= m.id %></td>
-          <td><a href="/historial/<%= m.placa %>"><%= m.placa %></a></td>
-          <td><%= m.cedis_nombre || '—' %></td>
-          <td><%= m.tipo %></td>
-          <td><%= m.fecha_inicio ? dayjs(m.fecha_inicio).format('DD/MM/YYYY') : '—' %></td>
-          <td>
-            <!-- Se realizó (trabajos + comentario) -->
-            <form method="post" action="/mantenimientos/<%= m.id %>/realizado<%= cedisId ? ('?cedis_id='+cedisId) : '' %>" class="row" style="gap:.5rem; flex-wrap:wrap;">
-              <label><input type="checkbox" name="trabajos" value="Cambio de aceite"> Aceite</label>
-              <label><input type="checkbox" name="trabajos" value="Cambio de filtros"> Filtros</label>
-              <label><input type="checkbox" name="trabajos" value="Ajuste de frenos"> Frenos</label>
-              <label><input type="checkbox" name="trabajos" value="Rotación de llantas"> Llantas</label>
-              <label><input type="checkbox" name="trabajos" value="Revisión de correas"> Correas</label>
-              <input type="text" name="comentario" placeholder="Comentario" style="min-width:220px;">
-              <button class="btn success">✅ Se realizó</button>
-            </form>
-
-            <!-- Eliminar (opcional) -->
-            <form method="post" action="/mantenimientos/<%= m.id %>/delete<%= cedisId ? ('?cedis_id='+cedisId) : '' %>" onsubmit="return confirm('¿Eliminar mantenimiento <%= m.id %>?')" style="margin-top:.5rem;">
-              <button class="btn danger">🗑️ Eliminar</button>
-            </form>
-          </td>
+          <th>#</th>
+          <th>Placa</th>
+          <th>CEDIS</th>
+          <th>Tipo</th>
+          <th>Fecha programada</th>
+          <th>Kilometraje</th>
+          <th style="width:220px">Acciones</th>
         </tr>
-      <% }) %>
-    </tbody>
-  </table>
+      </thead>
+      <tbody>
+        <% if (!mants || mants.length===0) { %>
+          <tr>
+            <td colspan="7" style="text-align:center;opacity:.7;padding:24px">No hay mantenimientos abiertos en este mes.</td>
+          </tr>
+        <% } %>
+
+        <% (mants||[]).forEach(m => { %>
+          <tr>
+            <td><%= m.id %></td>
+            <td><a href="/historial/<%= m.placa %>"><strong><%= m.placa %></strong></a></td>
+            <td><%= m.cedis_nombre || '—' %></td>
+            <td><span class="badge orange"><%= m.tipo %></span></td>
+            <td><%= m.fecha_inicio ? dayjs(m.fecha_inicio).format('DD/MM/YYYY') : '—' %></td>
+            <td><%= m.km_al_entrar || '—' %></td>
+            <td>
+              <!-- Se realizó -> abre modal -->
+              <button class="btn success"
+                      data-open-realizado="1"
+                      data-id="<%= m.id %>"
+                      data-placa="<%= m.placa %>"
+                      type="button">✅ Se realizó</button>
+
+              <!-- Editar (si tienes vista) -->
+              <!-- <a class="btn warning" href="/mantenimientos/<%= m.id %>/edit">✏️ Editar</a> -->
+
+              <!-- Eliminar -->
+              <form method="post" action="/mantenimientos/<%= m.id %>/delete" style="display:inline" onsubmit="return confirm('Eliminar mantenimiento <%= m.id %>?')">
+                <button class="btn danger" type="submit">🗑 Eliminar</button>
+              </form>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
 </section>
+
+<!-- Modal “Se realizó” -->
+<%- include('partials/modal_realizado') %>
+
+<script>
+// Modal básico
+(function(){
+  const $modal = document.getElementById('modal-realizado');
+  const $close = document.getElementById('modal-close');
+  const $title = document.getElementById('modal-title');
+  const $form  = document.getElementById('modal-form');
+  const $id    = document.getElementById('modal-mant-id');
+  const $placa = document.getElementById('modal-placa');
+  const $reco  = document.getElementById('modal-recomendacion');
+
+  // abre
+  document.querySelectorAll('[data-open-realizado]').forEach(btn=>{
+    btn.addEventListener('click', async ()=>{
+      const id = btn.dataset.id;
+      const placa = btn.dataset.placa;
+
+      $id.value = id;
+      $placa.textContent = placa || '—';
+      $title.textContent = `Cerrar mantenimiento #${id}`;
+
+      // Opcional: pedir recomendación al backend según el último mantenimiento
+      try {
+        const r = await fetch(`/api/ia/recomendar?mantId=${encodeURIComponent(id)}`);
+        if (r.ok) {
+          const data = await r.json();
+          $reco.textContent = data?.recomendacion || '—';
+        } else {
+          $reco.textContent = '—';
+        }
+      } catch {
+        $reco.textContent = '—';
+      }
+
+      $modal.classList.add('open');
+    });
+  });
+
+  // cierra
+  $close.addEventListener('click', ()=> $modal.classList.remove('open'));
+  $modal.addEventListener('click', (e)=> {
+    if (e.target === $modal) $modal.classList.remove('open');
+  });
+
+  // envío
+  $form.addEventListener('submit', ()=>{
+    // el form ya hace POST a /mantenimientos/:id/realizado (action se arma dinámicamente)
+    const id = $id.value;
+    $form.action = `/mantenimientos/${encodeURIComponent(id)}/realizado`;
+  });
+})();
+</script>
