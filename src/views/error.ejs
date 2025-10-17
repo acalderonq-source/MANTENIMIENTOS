@@ -1,0 +1,8 @@
+<%- include('partials/layout', { title }) %>
+<section class="card">
+  <h1><%= title %></h1>
+  <p><%= message %></p>
+  <% if (detail) { %>
+    <pre style="white-space:pre-wrap"><%= detail %></pre>
+  <% } %>
+</section>

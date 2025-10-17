@@ -16,7 +16,9 @@ const __dirname = path.dirname(__filename);
 
 const app = express();
 
-// ====== Motor de vistas y middlewares ======
+/* ==========================
+   Vistas y middlewares
+========================== */
 app.set('view engine', 'ejs');
 app.set('views', path.join(__dirname, 'views'));
 app.use(expressLayouts);
@@ -27,13 +29,11 @@ app.use(express.json());
 app.use(methodOverride('_method'));
 app.use(express.static(path.join(__dirname, '../public')));
 
-app.use(
-  session({
-    secret: process.env.SESSION_SECRET || 'dev_secret',
-    resave: false,
-    saveUninitialized: false,
-  })
-);
+app.use(session({
+  secret: process.env.SESSION_SECRET || 'dev_secret',
+  resave: false,
+  saveUninitialized: false
+}));
 
 // Helpers a vistas
 app.use((req, res, next) => {
@@ -42,23 +42,50 @@ app.use((req, res, next) => {
   next();
 });
 
-// ====== Utils de programación preventiva ======
+/* ==========================
+   Utilidades de fecha / IA reglas
+========================== */
 
-function diasBasePorVeces(veces = 0) {
-  if (veces >= 5) return 35;
-  if (veces >= 3) return 40;
-  return 45;
+// capacidad por CEDIS (nombre). Cartago y Transportadora → 5 / día, otros 1 / día.
+function capacidadPorCedisNombre(nombre = '') {
+  const n = String(nombre || '').toLowerCase();
+  if (n.includes('cartago') || n.includes('transportadora')) return 5;
+  return 1;
 }
-function esDomingo(isoDate) {
-  const d = dayjs(isoDate);
-  return d.day() === 0; // 0 = Domingo
+
+// trae nombre cedis por id (cache simple en llamada)
+async function nombreCedis(cedisId) {
+  if (!cedisId) return null;
+  const [[row]] = await pool.query('SELECT nombre FROM cedis WHERE id=?', [cedisId]);
+  return row?.nombre || null;
 }
-function siguienteHabil(isoDate) {
-  let d = dayjs(isoDate);
+
+// domingo?
+function esDomingo(iso) {
+  return dayjs(iso).day() === 0;
+}
+// siguiente hábil (evitar domingo)
+function siguienteHabil(iso) {
+  let d = dayjs(iso);
   while (d.day() === 0) d = d.add(1, 'day');
   return d;
 }
-async function obtenerFechasProgramadas() {
+
+// cuenta programados abiertos de un CEDIS para una fecha
+async function conteoDiaCedis(cedisId, fechaISO) {
+  const [[r]] = await pool.query(
+    `SELECT COUNT(*) AS n
+       FROM mantenimientos
+      WHERE cedis_id = ?
+        AND fecha_fin IS NULL
+        AND DATE(fecha_inicio) = DATE(?)`,
+    [cedisId || null, fechaISO]
+  );
+  return r?.n || 0;
+}
+
+// obtiene fechas ya programadas (abiertos con fecha_inicio)
+async function setFechasProgramadas() {
   const [rows] = await pool.query(`
     SELECT fecha_inicio
       FROM mantenimientos
@@ -67,74 +94,92 @@ async function obtenerFechasProgramadas() {
   `);
   return new Set(
     (rows || [])
-      .map((r) => r.fecha_inicio)
+      .map(r => r.fecha_inicio)
       .filter(Boolean)
-      .map((f) => dayjs(f).format('YYYY-MM-DD'))
+      .map(f => dayjs(f).format('YYYY-MM-DD'))
   );
 }
-function espaciar7dias(fechaISO, setFechas) {
-  let f = dayjs(fechaISO);
-  const colisiona = (cand) => {
-    const c = dayjs(cand);
-    for (const val of setFechas) {
-      const d = dayjs(val);
-      const diff = Math.abs(c.diff(d, 'day'));
-      if (diff < 7) return true;
-    }
-    return false;
-  };
-  while (esDomingo(f) || colisiona(f)) {
-    f = f.add(1, 'day');
+
+// evita colisiones a ±6 días respecto a fechas ya programadas (espaciado global)
+function colisiona7dias(candISO, fechasSet) {
+  const c = dayjs(candISO);
+  for (const val of fechasSet) {
+    const d = dayjs(val);
+    const diff = Math.abs(c.diff(d, 'day'));
+    if (diff < 7) return true;
   }
-  return f;
+  return false;
 }
-async function calcularProximaFecha(unidadId) {
+
+// calcula próxima fecha de un mantenimiento en base a historial + capacidad por cede
+async function calcularProximaFecha(unidadId, preferCedisId = null) {
+  // veces que ha entrado
   const [[{ veces } = { veces: 0 }]] = await pool.query(
-    'SELECT COUNT(*) AS veces FROM mantenimientos WHERE unidad_id=?',
-    [unidadId]
+    'SELECT COUNT(*) AS veces FROM mantenimientos WHERE unidad_id=?', [unidadId]
   );
-  const [hist] = await pool.query(
-    `
-    SELECT id, tipo, fecha_inicio, fecha_fin
+
+  // último mantenimiento
+  const [hist] = await pool.query(`
+    SELECT id, tipo, fecha_inicio, fecha_fin, cedis_id
       FROM mantenimientos
      WHERE unidad_id=?
      ORDER BY id DESC
      LIMIT 1
-  `,
-    [unidadId]
-  );
-  const ultimo = Array.isArray(hist) && hist.length ? hist[0] : null;
+  `, [unidadId]);
+  const ultimo = hist?.[0] || null;
 
-  let baseDias = diasBasePorVeces(veces || 0);
+  // base días
+  let baseDias = 45;
+  if (veces >= 5) baseDias = 35;
+  else if (veces >= 3) baseDias = 40;
   if (ultimo && String(ultimo.tipo || '').toUpperCase() === 'CORRECTIVO') {
     baseDias = Math.min(baseDias, 30);
   }
 
-  let baseFecha;
-  if (!ultimo) baseFecha = dayjs().add(baseDias, 'day');
-  else baseFecha = dayjs(ultimo.fecha_fin || ultimo.fecha_inicio).add(baseDias, 'day');
+  let base = ultimo ? dayjs(ultimo.fecha_fin || ultimo.fecha_inicio) : dayjs();
+  base = base.add(baseDias, 'day');
 
-  const setFechas = await obtenerFechasProgramadas();
-  let fecha = siguienteHabil(baseFecha);
-  fecha = espaciar7dias(fecha, setFechas);
-  return fecha.format('YYYY-MM-DD');
+  // reglas globales
+  const fechasSet = await setFechasProgramadas();
+
+  // buscar primer día que cumpla:
+  // - no domingo
+  // - no colisionar ±6 días con otros programados
+  // - no exceder capacidad del CEDIS del mantenimiento (si hay cedis)
+  // - no extenderse demasiado (máx +120 días desde base por seguridad)
+  let d = siguienteHabil(base);
+  const cedisId = preferCedisId ?? ultimo?.cedis_id ?? null;
+  const cedisNombre = await nombreCedis(cedisId);
+  const capacidad = capacidadPorCedisNombre(cedisNombre);
+  for (let i = 0; i < 180; i++) {
+    const iso = d.format('YYYY-MM-DD');
+    if (!colisiona7dias(iso, fechasSet) && !esDomingo(iso)) {
+      if (!cedisId) {
+        return iso; // sin cede asociada, aceptamos fecha
+      }
+      const n = await conteoDiaCedis(cedisId, iso);
+      if (n < capacidad) return iso;
+    }
+    d = d.add(1, 'day');
+  }
+  // fallback si no encontramos antes
+  return d.format('YYYY-MM-DD');
 }
 
-// ====== Auth mínimo ======
+/* ==========================
+   Auth mínimo
+========================== */
 app.get('/login', (req, res) => res.render('login', { title: 'Iniciar sesión' }));
 
 app.post('/login', async (req, res) => {
   try {
     const { username, password } = req.body;
-    const [rows] = await pool.query(
-      `
+    const [rows] = await pool.query(`
       SELECT u.id, u.username, u.password_hash, r.nombre AS rol
         FROM usuarios u
         JOIN roles r ON r.id = u.rol_id
        WHERE u.username = ? AND u.activo = 1
-    `,
-      [username]
-    );
+    `, [username]);
 
     if (!rows?.length) {
       return res.render('login', { title: 'Iniciar sesión', error: 'Usuario o contraseña inválidos' });
@@ -156,91 +201,97 @@ app.get('/logout', (req, res) => {
   req.session.destroy(() => res.redirect('/login'));
 });
 
-// ====== Dashboard con filtro por mes ======
-app.get('/', async (req, res) => {
+/* ==========================
+   Dashboard
+========================== */
+app.get('/', async (req, res, next) => {
   try {
-    const mesStr = (req.query.mes || '').trim(); // ej: "2025-11"
-    const mesBase =
-      mesStr && /^\d{4}-\d{2}$/.test(mesStr) ? dayjs(mesStr + '-01') : dayjs().startOf('month');
-    const ini = mesBase.startOf('month').format('YYYY-MM-DD');
-    const fin = mesBase.endOf('month').format('YYYY-MM-DD');
-
-    const [[kpis]] = await pool.query(
-      `
+    const [[kpis]] = await pool.query(`
       SELECT
-        (SELECT COUNT(*) FROM unidades) AS unidades,
+        (SELECT COUNT(*) FROM unidades)                              AS unidades,
         (SELECT COUNT(*) FROM mantenimientos WHERE fecha_fin IS NULL) AS en_taller,
-        (SELECT COUNT(*) FROM mantenimientos WHERE DATE(fecha_inicio)=CURDATE()) AS hoy,
-        (SELECT COUNT(*) FROM mantenimientos WHERE fecha_inicio BETWEEN ? AND ?) AS programados_mes,
-        (SELECT COUNT(*) FROM mantenimientos WHERE fecha_fin     BETWEEN ? AND ?) AS realizados_mes,
-        (SELECT COUNT(*) FROM mantenimientos WHERE fecha_inicio BETWEEN ? AND ? AND fecha_fin IS NULL) AS pendientes_mes
-    `,
-      [ini, fin, ini, fin, ini, fin]
-    );
-
-    const [mants] = await pool.query(
-      `
+        (SELECT COUNT(*) FROM mantenimientos WHERE DATE(fecha_inicio)=CURDATE()) AS hoy
+    `);
+    const [mants] = await pool.query(`
       SELECT m.id, u.placa, c.nombre AS cedis, m.tipo, m.fecha_inicio, m.fecha_fin, m.duracion_dias
         FROM mantenimientos m
-        JOIN unidades u ON u.id=m.unidad_id
-        LEFT JOIN cedis c ON c.id=m.cedis_id
-       WHERE (m.fecha_inicio BETWEEN ? AND ?)
-          OR (m.fecha_fin     BETWEEN ? AND ?)
-       ORDER BY COALESCE(m.fecha_fin, m.fecha_inicio) DESC, m.id DESC
-       LIMIT 100
-    `,
-      [ini, fin, ini, fin]
-    );
-
-    res.render('dashboard', {
-      title: 'Dashboard',
-      kpis,
-      mants,
-      mes: mesBase.format('YYYY-MM'),
-      rango: { ini, fin },
-    });
+        JOIN unidades u ON u.id = m.unidad_id
+        LEFT JOIN cedis c ON c.id = m.cedis_id
+       ORDER BY m.id DESC
+       LIMIT 10
+    `);
+    res.render('dashboard', { title: 'Dashboard', kpis, mants });
   } catch (e) {
-    console.error('dashboard error', e);
-    res.status(500).send('Error cargando dashboard');
+    next(e);
   }
 });
 
-// ====== Unidades (lista simple) ======
-app.get('/unidades', async (req, res) => {
+/* ==========================
+   Unidades
+========================== */
+app.get('/unidades', async (req, res, next) => {
   try {
-    const [unidades] = await pool.query(`
+    const cedisId = (req.query.cedis_id || '').trim();
+    const [cedis] = await pool.query('SELECT * FROM cedis ORDER BY nombre');
+
+    let sql = `
       SELECT u.*, c.nombre AS cedis_nombre
         FROM unidades u
-        LEFT JOIN cedis c ON c.id = u.cedis_id
-       ORDER BY u.id DESC
-    `);
-    const [cedis] = await pool.query('SELECT * FROM cedis ORDER BY nombre');
-    res.render('unidades', { title: 'Unidades', unidades, cedis });
+        LEFT JOIN cedis c ON c.id=u.cedis_id
+       WHERE 1=1
+    `;
+    const params = [];
+    if (cedisId) {
+      sql += ' AND u.cedis_id = ?';
+      params.push(cedisId);
+    }
+    sql += ' ORDER BY u.id DESC';
+    const [unidades] = await pool.query(sql, params);
+
+    res.render('unidades', { title: 'Unidades', unidades, cedis, cedisId });
   } catch (e) {
-    console.error('unidades list error', e);
-    res.status(500).send('No se pudo cargar unidades');
+    next(e);
   }
 });
 
-// ====== Mantenimientos: abiertos e historial ======
-app.get('/mantenimientos', async (req, res) => {
+/* ==========================
+   Mantenimientos
+========================== */
+app.get('/mantenimientos', async (req, res, next) => {
   try {
-    const [abiertos] = await pool.query(`
+    const cedisId = (req.query.cedis_id || '').trim();
+
+    const [cedis] = await pool.query('SELECT id, nombre FROM cedis ORDER BY nombre');
+
+    let sql = `
       SELECT m.*, u.placa, c.nombre AS cedis_nombre
         FROM mantenimientos m
         JOIN unidades u ON u.id = m.unidad_id
         LEFT JOIN cedis c ON c.id = m.cedis_id
        WHERE m.fecha_fin IS NULL
-       ORDER BY m.id DESC
-    `);
-    res.render('mantenimientos_list', { title: 'Mantenimientos', mants: abiertos });
+    `;
+    const params = [];
+    if (cedisId) {
+      sql += ' AND m.cedis_id = ?';
+      params.push(cedisId);
+    }
+    sql += ' ORDER BY m.fecha_inicio IS NULL DESC, m.fecha_inicio ASC, m.id DESC';
+
+    const [mants] = await pool.query(sql, params);
+
+    res.render('mantenimientos_list', {
+      title: 'Mantenimientos abiertos',
+      mants,
+      cedis,
+      cedisId
+    });
   } catch (e) {
-    console.error('mants abiertos error', e);
-    res.status(500).send('No se pudo listar mantenimientos');
+    next(e);
   }
 });
 
-app.get('/historial', async (req, res) => {
+// Historial general
+app.get('/historial', async (req, res, next) => {
   try {
     const [cerrados] = await pool.query(`
       SELECT m.*, u.placa, c.nombre AS cedis_nombre
@@ -252,60 +303,54 @@ app.get('/historial', async (req, res) => {
     `);
     res.render('historial', { title: 'Historial', mants: cerrados });
   } catch (e) {
-    console.error('historial error', e);
-    res.status(500).send('No se pudo cargar historial');
+    next(e);
   }
 });
 
-app.get('/historial/:placa', async (req, res) => {
+// Historial por placa
+app.get('/historial/:placa', async (req, res, next) => {
   try {
     const placa = req.params.placa.toUpperCase();
-    const [rows] = await pool.query(
-      `
+    const [rows] = await pool.query(`
       SELECT m.*, u.placa, c.nombre AS cedis_nombre
         FROM mantenimientos m
         JOIN unidades u ON u.id = m.unidad_id
         LEFT JOIN cedis c ON c.id = m.cedis_id
        WHERE u.placa = ?
        ORDER BY m.id DESC
-    `,
-      [placa]
-    );
+    `, [placa]);
     res.render('historial_placa', { title: `Historial ${placa}`, mants: rows, placa });
   } catch (e) {
-    console.error('historial placa error', e);
-    res.status(500).send('No se pudo cargar historial por placa');
+    next(e);
   }
 });
 
-// ====== Cerrar mantenimiento + reprogramar ======
-app.post('/mantenimientos/:id/realizado', async (req, res) => {
+/* Cerrar/realizado + reprogramar (POST)
+   La vista envía: trabajos[] y comentario
+*/
+app.post('/mantenimientos/:id/realizado', async (req, res, next) => {
   const mantId = Number(req.params.id);
   try {
     const [[mant]] = await pool.query('SELECT * FROM mantenimientos WHERE id=?', [mantId]);
     if (!mant) return res.status(404).send('Mantenimiento no encontrado');
 
     const hoy = dayjs().format('YYYY-MM-DD');
-
-    // trabajos/comentario (concat a motivo)
     const trabajos = (Array.isArray(req.body.trabajos) ? req.body.trabajos : []).filter(Boolean);
     const comentario = (req.body.comentario || '').trim();
+
     const hechoTxt = trabajos.length ? ` | Hecho: ${trabajos.join(', ')}` : '';
     const comentarioTxt = comentario ? ` | Nota: ${comentario}` : '';
 
-    // IMPORTANTE: no asignar duracion_dias si es columna generada en tu esquema.
-    await pool.query(
-      `
+    // NO tocar duracion_dias si es columna generada; solo fecha_fin + reservado
+    await pool.query(`
       UPDATE mantenimientos
          SET fecha_fin=?,
              reservado_inventario=0,
              motivo = CONCAT(COALESCE(motivo,''), ?, ?)
        WHERE id=?
-    `,
-      [hoy, hechoTxt, comentarioTxt, mantId]
-    );
+    `, [hoy, hechoTxt, comentarioTxt, mantId]);
 
-    // Liberar unidad si ya no tiene otros abiertos
+    // liberar unidad si no tiene otros abiertos
     const [[rowUnidad]] = await pool.query('SELECT unidad_id FROM mantenimientos WHERE id=?', [mantId]);
     const unidadId = rowUnidad?.unidad_id;
     if (unidadId) {
@@ -318,99 +363,69 @@ app.post('/mantenimientos/:id/realizado', async (req, res) => {
       }
     }
 
-    // Reprogramar preventivo automático
+    // Reprogramar preventivo automático (usa reglas de capacidad por CEDIS)
     if (unidadId) {
-      const fechaProgramada = await calcularProximaFecha(unidadId);
-      await pool.query(
-        `
+      const fechaProgramada = await calcularProximaFecha(unidadId, mant.cedis_id || null);
+      await pool.query(`
         INSERT INTO mantenimientos
           (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
         VALUES (?,?, 'PREVENTIVO', ?, ?, ?, 1, ?)
-      `,
-        [
-          unidadId,
-          mant.cedis_id || null,
-          'Plan preventivo sugerido',
-          fechaProgramada,
-          mant.km_al_entrar || null,
-          req.session.user?.id || null,
-        ]
-      );
+      `, [
+        unidadId,
+        mant.cedis_id || null,
+        'Plan preventivo sugerido',
+        fechaProgramada,
+        mant.km_al_entrar || null,
+        req.session.user?.id || null
+      ]);
     }
 
     res.redirect('/mantenimientos');
   } catch (e) {
-    console.error('cerrar/reprogramar error', e);
-    res.status(500).send('No se pudo cerrar y reprogramar');
+    next(e);
   }
 });
 
-// ====== API: programar por IA (reglas internas) ======
-app.post('/api/ia/programar', async (req, res) => {
+// Eliminar mantenimiento
+app.post('/mantenimientos/:id/delete', async (req, res, next) => {
   try {
-    const { unidad_id, placa } = req.body || {};
-    if (!unidad_id && !placa) return res.status(400).json({ error: 'unidad_id o placa requerido' });
+    const id = Number(req.params.id);
+    await pool.query('DELETE FROM mantenimientos WHERE id=?', [id]);
+    res.redirect('/mantenimientos');
+  } catch (e) {
+    next(e);
+  }
+});
 
-    let unidad = null;
-    if (unidad_id) {
-      const [u1] = await pool.query('SELECT * FROM unidades WHERE id=?', [unidad_id]);
-      unidad = u1?.[0] || null;
-    } else if (placa) {
-      const [u2] = await pool.query('SELECT * FROM unidades WHERE placa=?', [placa]);
-      unidad = u2?.[0] || null;
-    }
-    if (!unidad) return res.status(404).json({ error: 'Unidad no encontrada' });
+// Programar TODOS los de un CEDIS (masivo)
+app.post('/mantenimientos/programar-cedis', async (req, res, next) => {
+  try {
+    const cedisId = (req.body.cedis_id || req.query.cedis_id || '').trim();
+    if (!cedisId) return res.redirect('/mantenimientos');
 
-    const fecha = await calcularProximaFecha(unidad.id);
-    const [r] = await pool.query(
-      `
-      INSERT INTO mantenimientos
-        (unidad_id, cedis_id, tipo, motivo, fecha_inicio, km_al_entrar, reservado_inventario, creado_por)
-      VALUES (?,?, 'PREVENTIVO', 'Plan preventivo sugerido', ?, ?, 1, ?)
-    `,
-      [unidad.id, unidad.cedis_id || null, fecha, unidad.kilometraje || null, req.session.user?.id || null]
+    const [unidades] = await pool.query(
+      'SELECT id FROM unidades WHERE cedis_id = ? AND estado="ACTIVA" ORDER BY id',
+      [cedisId]
     );
 
-    res.json({ ok: true, id: r.insertId, fecha_programada: fecha });
+    for (const u of (unidades || [])) {
+      const fecha = await calcularProximaFecha(u.id, cedisId);
+      await pool.query(`
+        INSERT INTO mantenimientos
+          (unidad_id, cedis_id, tipo, motivo, fecha_inicio, reservado_inventario, creado_por)
+        VALUES (?,?, 'PREVENTIVO', 'Programado masivo por CEDIS', ?, 1, ?)
+      `, [u.id, cedisId, fecha, req.session.user?.id || null]);
+    }
+
+    res.redirect('/mantenimientos?cedis_id=' + encodeURIComponent(cedisId));
   } catch (e) {
-    console.error('api/ia/programar error', e);
-    res.status(500).json({ error: 'No se pudo programar' });
+    next(e);
   }
 });
 
-// ====== ELIMINAR mantenimientos cerrados ======
-async function eliminarMantenimientoCerrado(mantId) {
-  const [[m]] = await pool.query('SELECT id, fecha_fin FROM mantenimientos WHERE id=?', [mantId]);
-  if (!m) throw new Error('No existe');
-  if (!m.fecha_fin) throw new Error('Solo se pueden eliminar mantenimientos ya realizados (cerrados).');
-  await pool.query('DELETE FROM mantenimientos WHERE id=?', [mantId]);
-}
-
-// DELETE real
-app.delete('/mantenimientos/:id', async (req, res) => {
-  const mantId = Number(req.params.id);
-  try {
-    await eliminarMantenimientoCerrado(mantId);
-    res.redirect('/historial');
-  } catch (e) {
-    console.error('eliminar cerrado error', e);
-    res.status(400).send(e.message || 'No se pudo eliminar');
-  }
-});
-
-// Alias POST (para formularios simples)
-app.post('/mantenimientos/:id/delete', async (req, res) => {
-  const mantId = Number(req.params.id);
-  try {
-    await eliminarMantenimientoCerrado(mantId);
-    res.redirect('/historial');
-  } catch (e) {
-    console.error('eliminar cerrado error', e);
-    res.status(400).send(e.message || 'No se pudo eliminar');
-  }
-});
-
-// ====== API: próximos (soporte) ======
+/* ==========================
+   API auxiliares
+========================== */
 app.get('/api/mantenimientos/proximos', async (req, res) => {
   try {
     const [rows] = await pool.query(`
@@ -426,33 +441,44 @@ app.get('/api/mantenimientos/proximos', async (req, res) => {
     `);
     res.json(rows);
   } catch (e) {
-    console.error('api proximos error', e);
     res.status(500).json({ error: 'No se pudo calcular próximos' });
   }
 });
 
-// ====== Diagnóstico ======
 app.get('/health', (req, res) => res.json({ ok: true, time: new Date().toISOString() }));
+
 app.get('/debug/db', async (req, res) => {
   try {
     const [[r]] = await pool.query('SELECT 1 AS ok');
-    res
-      .status(200)
-      .send(
-        `DB OK -> host=${dbCfg.host} port=${dbCfg.port} db=${dbCfg.database} ssl=${dbCfg.sslEnabled} | result=${JSON.stringify(
-          r
-        )}`
-      );
+    res.status(200).send(
+      `DB OK -> host=${dbCfg.host} port=${dbCfg.port} db=${dbCfg.database} ssl=${dbCfg.sslEnabled} | result=${JSON.stringify(r)}`
+    );
   } catch (e) {
-    res
-      .status(500)
-      .send(
-        `DB ERROR -> host=${dbCfg.host} port=${dbCfg.port} db=${dbCfg.database} ssl=${dbCfg.sslEnabled} | ${e.message}`
-      );
+    res.status(500).send(
+      `DB ERROR -> host=${dbCfg.host} port=${dbCfg.port} db=${dbCfg.database} ssl=${dbCfg.sslEnabled} | ${e.message}`
+    );
   }
 });
 
-// ====== Start ======
+/* ==========================
+   Error handler global
+========================== */
+app.use((err, req, res, next) => {
+  console.error('🔥 Unhandled error:', err);
+  try {
+    res.status(500).render('error', {
+      title: 'Error',
+      message: 'Ocurrió un error interno en el servidor.',
+      detail: process.env.NODE_ENV === 'development' ? (err.stack || String(err)) : null
+    });
+  } catch {
+    res.status(500).send('Internal Server Error');
+  }
+});
+
+/* ==========================
+   Start
+========================== */
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`✅ Servidor en http://0.0.0.0:${PORT}`);

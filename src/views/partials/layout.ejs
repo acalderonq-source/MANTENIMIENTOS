@@ -2,26 +2,77 @@
 <html lang="es">
 <head>
   <meta charset="utf-8" />
-  <title><%= title || 'Mantenimientos' %></title>
+  <title><%= title ? (title + " · ") : "" %>Mantenimientos</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <!-- Favicon opcional -->
+  <link rel="icon" href="/css/img/gas-tomza.png" />
+
+  <!-- Estilos -->
   <link rel="stylesheet" href="/css/styles.css" />
 </head>
 <body>
+  <!-- Topbar -->
   <header class="topbar">
-    <div class="brand">
-      <img src="/css/img/gas-tomza.png" alt="Tomza" />
-      <span>Mantenimientos</span>
+    <div class="container">
+      <div class="brand">
+        <img src="/css/img/gas-tomza.png" alt="Gas Tomza" class="brand-logo" />
+        <span class="brand-name">Mantenimientos</span>
+      </div>
+
+      <nav class="nav">
+        <a href="/" class="nav-link">Dashboard</a>
+        <a href="/unidades" class="nav-link">Unidades</a>
+        <a href="/mantenimientos" class="nav-link">Abiertos</a>
+        <a href="/historial" class="nav-link">Historial</a>
+      </nav>
+
+      <div class="session">
+        <% if (user) { %>
+          <span class="user-info">👤 <%= user.username %></span>
+          <a class="btn light" href="/logout">Salir</a>
+        <% } else { %>
+          <a class="btn light" href="/login">Entrar</a>
+        <% } %>
+      </div>
     </div>
-    <nav>
-      <a href="/">Dashboard</a>
-      <a href="/unidades">Unidades</a>
-      <a href="/mantenimientos">Abiertos</a>
-      <a href="/historial">Historial</a>
-    </nav>
   </header>
 
-  <main class="container">
+  <!-- Contenido -->
+  <main class="container mt">
     <%- body %>
   </main>
+
+  <!-- Footer -->
+  <footer class="footer">
+    <div class="container">
+      <small>© <%= new Date().getFullYear() %> Gas Tomza · Mantenimientos</small>
+      <a href="/health" class="muted">health</a>
+    </div>
+  </footer>
+
+  <!-- Botón flotante Asistente IA + panel -->
+  <%- include('partials/chatbot') %>
+
+  <!-- Scripts mínimos -->
+  <script>
+    // Toggle del panel del asistente
+    const iaBtn = document.querySelector('#ia-fab');
+    const iaPanel = document.querySelector('#ia-panel');
+    if (iaBtn && iaPanel) {
+      iaBtn.addEventListener('click', () => {
+        iaPanel.classList.toggle('open');
+      });
+    }
+
+    // Cierra el panel si clic fuera
+    document.addEventListener('click', (e) => {
+      if (!iaPanel) return;
+      const clickInside = iaPanel.contains(e.target) || (iaBtn && iaBtn.contains(e.target));
+      if (!clickInside && iaPanel.classList.contains('open')) {
+        iaPanel.classList.remove('open');
+      }
+    });
+  </script>
 </body>
 </html>
