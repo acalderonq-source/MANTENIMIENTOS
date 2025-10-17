@@ -1,21 +1,11 @@
 <!-- FAB Asistente IA -->
 <button id="fab-ia"
-  style="
-    position:fixed; right:22px; bottom:22px;
-    width:60px; height:60px; border-radius:50%;
-    border:none; cursor:pointer; z-index:9999;
-    box-shadow:0 10px 25px rgba(0,0,0,.25);
-    background:#ff7a00; color:#fff; font-size:26px; line-height:60px;
-  "
+  style="position:fixed;right:22px;bottom:22px;width:60px;height:60px;border-radius:50%;border:none;cursor:pointer;z-index:9999;box-shadow:0 10px 25px rgba(0,0,0,.25);background:#ff7a00;color:#fff;font-size:26px;line-height:60px;"
   title="Asistente IA">🤖</button>
 
 <!-- Panel lateral -->
 <aside id="ia-panel"
-  style="
-    position:fixed; right:-420px; top:0; height:100vh; width:420px;
-    background:#111; color:#eee; z-index:9998; box-shadow:-8px 0 24px rgba(0,0,0,.35);
-    transition:right .25s ease; padding:18px 16px 24px; overflow:auto;
-  ">
+  style="position:fixed;right:-420px;top:0;height:100vh;width:420px;background:#111;color:#eee;z-index:9998;box-shadow:-8px 0 24px rgba(0,0,0,.35);transition:right .25s ease;padding:18px 16px 24px;overflow:auto;">
   <div style="display:flex;align-items:center;justify-content:space-between;">
     <h3 style="margin:0;font-weight:700;">Asistente IA</h3>
     <button id="ia-close" class="btn" style="background:#333;border:none;color:#fff;">✕</button>
@@ -30,49 +20,46 @@
 
   <div class="card" style="background:#0f172a;border-radius:12px;padding:12px;margin-top:12px">
     <h4 style="margin:0 0 8px 0;">Acciones rápidas</h4>
-    <ul style="margin:0; padding-left:18px">
-      <li>Ver mantenimientos abiertos por CEDIS desde el filtro de la lista.</li>
-      <li>Usa “Se realizó” para cerrar y reprogramar automáticamente.</li>
+    <ul style="margin:0;padding-left:18px">
+      <li>Filtra abiertos por CEDIS en la lista.</li>
+      <li>“Se realizó” cierra y reprograma automático.</li>
       <li>Capacidad diaria: Cartago y Transportadora hasta 5/día; demás CEDIS 1/día.</li>
     </ul>
   </div>
 </aside>
 
 <script>
-  (function () {
-    const $fab = document.getElementById('fab-ia');
-    const $panel = document.getElementById('ia-panel');
-    const $close = document.getElementById('ia-close');
-    const $body = document.getElementById('ia-proximos-body');
+(function () {
+  const $fab = document.getElementById('fab-ia');
+  const $panel = document.getElementById('ia-panel');
+  const $close = document.getElementById('ia-close');
+  const $body = document.getElementById('ia-proximos-body');
 
-    function openPanel() {
-      $panel.style.right = '0';
-      loadProximos();
-    }
-    function closePanel() { $panel.style.right = '-420px'; }
+  function openPanel() { $panel.style.right = '0'; loadProximos(); }
+  function closePanel() { $panel.style.right = '-420px'; }
 
-    async function loadProximos() {
-      try {
-        $body.textContent = 'Cargando…';
-        const r = await fetch('/api/mantenimientos/proximos');
-        const data = await r.json();
-        if (!Array.isArray(data) || data.length === 0) {
-          $body.textContent = 'Sin sugerencias por ahora.';
-          return;
-        }
-        const html = ['<ol style="margin:0;padding-left:18px">'];
-        for (const it of data) {
-          const f = it.proxima_fecha ? new Date(it.proxima_fecha).toLocaleDateString() : '—';
-          html.push(`<li><strong>${it.placa}</strong> · ${it.cedis || '—'} · prox: ${f}</li>`);
-        }
-        html.push('</ol>');
-        $body.innerHTML = html.join('');
-      } catch (e) {
-        $body.textContent = 'Error cargando sugerencias.';
+  async function loadProximos() {
+    try {
+      $body.textContent = 'Cargando…';
+      const r = await fetch('/api/mantenimientos/proximos');
+      const data = await r.json();
+      if (!Array.isArray(data) || data.length === 0) {
+        $body.textContent = 'Sin sugerencias por ahora.';
+        return;
       }
+      const html = ['<ol style="margin:0;padding-left:18px">'];
+      for (const it of data) {
+        const f = it.proxima_fecha ? new Date(it.proxima_fecha).toLocaleDateString() : '—';
+        html.push(`<li><strong>${it.placa}</strong> · ${it.cedis || '—'} · prox: ${f}</li>`);
+      }
+      html.push('</ol>');
+      $body.innerHTML = html.join('');
+    } catch {
+      $body.textContent = 'Error cargando sugerencias.';
     }
+  }
 
-    $fab?.addEventListener('click', openPanel);
-    $close?.addEventListener('click', closePanel);
-  })();
+  $fab?.addEventListener('click', openPanel);
+  $close?.addEventListener('click', closePanel);
+})();
 </script>
