@@ -1,75 +1,37 @@
-
 <section class="card">
-  <div class="card-head">
-    <h1>Unidades</h1>
-    <form class="row" method="get" action="/unidades">
-      <label class="field">
-        <span>CEDIS</span>
-        <select name="cedis_id" onchange="this.form.submit()">
-          <option value="">(Todos)</option>
-          <% cedis.forEach(c => { %>
-            <option value="<%= c.id %>" <%= cedisId===c.id ? 'selected' : '' %>><%= c.nombre %></option>
-          <% }) %>
-        </select>
-      </label>
-      <noscript><button class="btn">Filtrar</button></noscript>
-    </form>
-  </div>
+  <h1>Unidades</h1>
 
-  <div class="table-wrap">
-    <table class="table">
-      <thead>
-        <tr>
-          <th>Placa</th>
-          <th>Tipo</th>
-          <th>CEDIS</th>
-          <th>Km</th>
-          <th>Estado</th>
-          <th style="width:340px">Programar (Preventivo)</th>
-        </tr>
-      </thead>
-      <tbody>
-        <% if (!unidades.length) { %>
-          <tr><td colspan="6" class="muted">No hay unidades en este CEDIS.</td></tr>
-        <% } %>
-        <% unidades.forEach(u => { %>
-          <tr>
-            <td><strong><%= u.placa %></strong></td>
-            <td><%= u.tipo || '—' %></td>
-            <td><%= u.cedis_nombre || 'N/A' %></td>
-            <td><%= u.kilometraje ?? '—' %></td>
-            <td><span class="pill <%= (u.estado||'').toLowerCase()==='activa' ? 'ok' : 'warn' %>"><%= u.estado || '—' %></span></td>
-            <td>
-              <form method="post" action="/unidades/<%= u.id %>/programar" class="stack">
-                <div class="row">
-                  <select name="cedis_id" class="input">
-                    <option value="">(N/A)</option>
-                    <% cedis.forEach(c => { %>
-                      <option value="<%= c.id %>" <%= u.cedis_id===c.id ? 'selected' : '' %>><%= c.nombre %></option>
-                    <% }) %>
-                  </select>
-
-                  <details class="work-box">
-                    <summary>Trabajos preventivos</summary>
-                    <div class="checks">
-                      <label><input type="checkbox" name="trabajos" value="Cambio de aceite"> Cambio de aceite</label>
-                      <label><input type="checkbox" name="trabajos" value="Filtro de aceite"> Filtro de aceite</label>
-                      <label><input type="checkbox" name="trabajos" value="Filtro de aire"> Filtro de aire</label>
-                      <label><input type="checkbox" name="trabajos" value="Filtro de combustible"> Filtro de combustible</label>
-                      <label><input type="checkbox" name="trabajos" value="Inspección frenos"> Inspección frenos</label>
-                      <label><input type="checkbox" name="trabajos" value="Revisión suspensión"> Revisión suspensión</label>
-                      <label><input type="checkbox" name="trabajos" value="Rotación de llantas"> Rotación de llantas</label>
-                      <label><input type="checkbox" name="trabajos" value="Engrase general"> Engrase general</label>
-                      <label><input type="checkbox" name="trabajos" value="Chequeo eléctrico"> Chequeo eléctrico</label>
-                    </div>
-                  </details>
-                  <button type="submit" class="btn primary">Programar</button>
-                </div>
-              </form>
-            </td>
-          </tr>
+  <form method="get" class="filters">
+    <label>
+      <span>Cede</span>
+      <select name="cedis_id" onchange="this.form.submit()">
+        <option value="">— Todas —</option>
+        <% (cedis || []).forEach(c => { %>
+          <option value="<%= c.id %>" <%= String(cedisId||'')===String(c.id) ? 'selected' : '' %>><%= c.nombre %></option>
         <% }) %>
-      </tbody>
-    </table>
-  </div>
+      </select>
+    </label>
+  </form>
+
+  <table class="table">
+    <thead>
+      <tr><th>Placa</th><th>Cede</th><th>Tipo</th><th>Km</th><th>Estado</th><th>Acciones</th></tr>
+    </thead>
+    <tbody>
+      <% (unidades || []).forEach(u => { %>
+        <tr>
+          <td><a href="/historial/<%= u.placa %>"><%= u.placa %></a></td>
+          <td><%= u.cedis_nombre || '-' %></td>
+          <td><%= u.tipo || '-' %></td>
+          <td><%= u.kilometraje || 0 %></td>
+          <td><%= u.estado || 'ACTIVA' %></td>
+          <td>
+            <form method="post" action="/unidades/<%= u.id %>/programar" style="display:inline">
+              <button class="btn primary" type="submit">Programar por IA</button>
+            </form>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
 </section>

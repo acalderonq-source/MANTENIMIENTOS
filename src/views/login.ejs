@@ -1,18 +1,17 @@
-
 <section class="card small">
   <h1>Iniciar sesión</h1>
-  <% if (typeof error !== 'undefined') { %>
-    <p class="error"><%= error %></p>
+  <% if (typeof error !== 'undefined' && error) { %>
+    <div class="alert error"><%= error %></div>
   <% } %>
-  <form method="post" class="stack">
+  <form method="post" action="/login" class="form">
     <label class="field">
       <span>Usuario</span>
-      <input name="username" required>
+      <input type="text" name="username" required />
     </label>
     <label class="field">
       <span>Contraseña</span>
-      <input type="password" name="password" required>
+      <input type="password" name="password" required />
     </label>
-    <button class="btn primary">Entrar</button>
+    <button class="btn primary" type="submit">Entrar</button>
   </form>
 </section>
